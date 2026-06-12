@@ -21,38 +21,99 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import com.fasterxml.jackson.core.JsonParseException;
 import org.junit.jupiter.api.Test;
 
 import org.springframework.ai.util.ResourceUtils;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
+ * Tests for {@link OpenClawChatOptions}.
+ *
  * @author Loong Wan
  */
 public class OpenClawChatOptionsTests {
 
 	@Test
 	void testBasicOptions() {
-		var options = OpenClawChatOptions.builder().temperature(3.14).topK(30).stop(List.of("a", "b", "c")).build();
+		var options = OpenClawChatOptions.builder()
+				.temperature(3.14).topK(30).stop(List.of("a", "b", "c")).build();
 
 		var optionsMap = options.toMap();
 		assertThat(optionsMap).containsEntry("temperature", 3.14);
-		assertThat(optionsMap).containsEntry("top_k", 30);
 		assertThat(optionsMap).containsEntry("stop", List.of("a", "b", "c"));
+		// topK is @JsonIgnore — not in serialized map
+		assertThat(options.getTopK()).isEqualTo(30);
 	}
 
-	
-	
 	@Test
-	void testModelAndFormat() {
-		var options = OpenClawChatOptions.builder().model("llama2").format("json").build();
+	void testStandardOpenAIFields() {
+		var options = OpenClawChatOptions.builder()
+			.model("openclaw/default")
+			.temperature(0.7)
+			.topP(0.9)
+			.frequencyPenalty(0.5)
+			.presencePenalty(0.3)
+			.seed(42)
+			.stop(List.of("END"))
+			.maxTokens(2048)
+			.user("conv:abc123")
+			.build();
 
 		var optionsMap = options.toMap();
-		assertThat(optionsMap).containsEntry("model", "llama2");
-		assertThat(optionsMap).containsEntry("format", "json");
+		assertThat(optionsMap).containsEntry("model", "openclaw/default");
+		assertThat(optionsMap).containsEntry("temperature", 0.7);
+		assertThat(optionsMap).containsEntry("top_p", 0.9);
+		assertThat(optionsMap).containsEntry("frequency_penalty", 0.5);
+		assertThat(optionsMap).containsEntry("presence_penalty", 0.3);
+		assertThat(optionsMap).containsEntry("seed", 42);
+		assertThat(optionsMap).containsEntry("stop", List.of("END"));
+		assertThat(optionsMap).containsEntry("max_tokens", 2048);
+		assertThat(optionsMap).containsEntry("user", "conv:abc123");
+	}
+
+	@Test
+	void testXOpenclawHeadersNotInMap() {
+		var options = OpenClawChatOptions.builder()
+			.model("openclaw/default")
+			.xOpenclawModel("openai/gpt-5.4")
+			.xOpenclawSessionKey("my-session-key")
+			.xOpenclawMessageChannel("slack")
+			.xOpenclawAgentId("my-agent")
+			.build();
+
+		// These should NOT appear in the serialized JSON body map
+		var optionsMap = options.toMap();
+		assertThat(optionsMap).doesNotContainKey("x_openclaw_model");
+		assertThat(optionsMap).doesNotContainKey("xOpenclawModel");
+		assertThat(optionsMap).doesNotContainKey("x_openclaw_session_key");
+		assertThat(optionsMap).doesNotContainKey("xOpenclawSessionKey");
+
+		// But they ARE accessible via getters
+		assertThat(options.getXOpenclawModel()).isEqualTo("openai/gpt-5.4");
+		assertThat(options.getXOpenclawSessionKey()).isEqualTo("my-session-key");
+		assertThat(options.getXOpenclawMessageChannel()).isEqualTo("slack");
+		assertThat(options.getXOpenclawAgentId()).isEqualTo("my-agent");
+
+		// toHttpHeaders() should convert them to HTTP header names
+		var headers = options.toHttpHeaders();
+		assertThat(headers).containsEntry("x-openclaw-model", "openai/gpt-5.4");
+		assertThat(headers).containsEntry("x-openclaw-session-key", "my-session-key");
+		assertThat(headers).containsEntry("x-openclaw-message-channel", "slack");
+		assertThat(headers).containsEntry("x-openclaw-agent-id", "my-agent");
+	}
+
+	@Test
+	void testToHttpHeadersSkipsNullAndEmpty() {
+		var options = OpenClawChatOptions.builder()
+			.model("openclaw/default")
+			.xOpenclawModel("openai/gpt-5.4")
+			.build();
+
+		var headers = options.toHttpHeaders();
+		assertThat(headers).hasSize(1);
+		assertThat(headers).containsEntry("x-openclaw-model", "openai/gpt-5.4");
+		assertThat(headers).doesNotContainKey("x-openclaw-session-key");
 	}
 
 	@Test
@@ -61,13 +122,6 @@ public class OpenClawChatOptionsTests {
 		var options = OpenClawChatOptions.builder().outputSchema(jsonSchemaAsText).build();
 
 		assertThat(options.getOutputSchema()).isEqualToIgnoringWhitespace(jsonSchemaAsText);
-	}
-
-	@Test
-	void testOutputSchemaOptionWithJsonAsString() {
-		assertThatThrownBy(() -> OpenClawChatOptions.builder().outputSchema("json"))
-			.hasCauseInstanceOf(JsonParseException.class)
-			.hasMessageContaining("Unrecognized token 'json'");
 	}
 
 	@Test
@@ -104,54 +158,22 @@ public class OpenClawChatOptionsTests {
 	@Test
 	void testFromOptions() {
 		var originalOptions = OpenClawChatOptions.builder()
-			.model("llama2")
+			.model("openclaw/default")
 			.temperature(0.7)
 			.topK(40)
+			.xOpenclawModel("openai/gpt-5.4")
+			.user("conv:abc")
 			.toolNames(Set.of("function1"))
 			.build();
 
 		var copiedOptions = OpenClawChatOptions.fromOptions(originalOptions);
 
-		// Test the copied options directly rather than through toMap()
-		assertThat(copiedOptions.getModel()).isEqualTo("llama2");
+		assertThat(copiedOptions.getModel()).isEqualTo("openclaw/default");
 		assertThat(copiedOptions.getTemperature()).isEqualTo(0.7);
 		assertThat(copiedOptions.getTopK()).isEqualTo(40);
+		assertThat(copiedOptions.getXOpenclawModel()).isEqualTo("openai/gpt-5.4");
+		assertThat(copiedOptions.getUser()).isEqualTo("conv:abc");
 		assertThat(copiedOptions.getToolNames()).containsExactly("function1");
-	}
-
-	@Test
-	void testFunctionOptionsNotInMap() {
-		var options = OpenClawChatOptions.builder().model("llama2").toolNames(Set.of("function1")).build();
-
-		var optionsMap = options.toMap();
-
-		// Verify function-related fields are not included in the map due to @JsonIgnore
-		assertThat(optionsMap).containsEntry("model", "llama2");
-		assertThat(optionsMap).doesNotContainKey("functions");
-		assertThat(optionsMap).doesNotContainKey("toolCallbacks");
-		assertThat(optionsMap).doesNotContainKey("proxyToolCalls");
-		assertThat(optionsMap).doesNotContainKey("toolContext");
-
-		// But verify they are still accessible through getters
-		assertThat(options.getToolNames()).containsExactly("function1");
-	}
-
-	@Test
-	void testDeprecatedMethods() {
-		var options = OpenClawChatOptions.builder()
-			.model("llama2")
-			.temperature(0.7)
-			.topK(40)
-			.toolNames("function1")
-			.build();
-
-		var optionsMap = options.toMap();
-		assertThat(optionsMap).containsEntry("model", "llama2");
-		assertThat(optionsMap).containsEntry("temperature", 0.7);
-		assertThat(optionsMap).containsEntry("top_k", 40);
-
-		// Function is not in map but accessible via getter
-		assertThat(options.getToolNames()).containsExactly("function1");
 	}
 
 	@Test
@@ -161,20 +183,22 @@ public class OpenClawChatOptionsTests {
 		var optionsMap = options.toMap();
 		assertThat(optionsMap).isEmpty();
 
-		// Verify all getters return null/empty
 		assertThat(options.getModel()).isNull();
 		assertThat(options.getTemperature()).isNull();
 		assertThat(options.getTopK()).isNull();
 		assertThat(options.getToolNames()).isEmpty();
 		assertThat(options.getToolContext()).isEmpty();
+		assertThat(options.getXOpenclawModel()).isNull();
+		assertThat(options.getUser()).isNull();
 	}
 
 	@Test
 	void testNullValuesNotIncludedInMap() {
-		var options = OpenClawChatOptions.builder().model("llama2").temperature(null).topK(null).stop(null).build();
+		var options = OpenClawChatOptions.builder()
+				.model("openclaw/default").temperature(null).topK(null).stop(null).build();
 
 		var optionsMap = options.toMap();
-		assertThat(optionsMap).containsEntry("model", "llama2");
+		assertThat(optionsMap).containsEntry("model", "openclaw/default");
 		assertThat(optionsMap).doesNotContainKey("temperature");
 		assertThat(optionsMap).doesNotContainKey("top_k");
 		assertThat(optionsMap).doesNotContainKey("stop");
@@ -186,107 +210,7 @@ public class OpenClawChatOptionsTests {
 
 		var optionsMap = options.toMap();
 		assertThat(optionsMap).containsEntry("temperature", 0.0);
-		assertThat(optionsMap).containsEntry("top_k", 0);
-		
-		
 		assertThat(optionsMap).containsEntry("seed", 0);
+		// topK is @JsonIgnore
 	}
-
-	/**
-	 * Demonstrates the difference between simple "json" format and JSON Schema format.
-	 *
-	 * Simple "json" format: Tells Ollama to return any valid JSON structure. JSON Schema
-	 * format: Tells Ollama to return JSON matching a specific schema.
-	 */
-	@Test
-	void testSimpleJsonFormatVsJsonSchema() {
-		var simpleJsonOptions = OpenClawChatOptions.builder().format("json").build();
-
-		var simpleJsonMap = simpleJsonOptions.toMap();
-		assertThat(simpleJsonMap).containsEntry("format", "json");
-		assertThat(simpleJsonOptions.getFormat()).isEqualTo("json");
-
-		var jsonSchemaAsText = ResourceUtils.getText("classpath:country-json-schema.json");
-		var schemaOptions = OpenClawChatOptions.builder().outputSchema(jsonSchemaAsText).build();
-
-		var schemaMap = schemaOptions.toMap();
-		assertThat(schemaMap).containsKey("format");
-		assertThat(schemaMap.get("format")).isInstanceOf(Map.class);
-
-		// Verify the schema contains expected structure
-		@SuppressWarnings("unchecked")
-		Map<String, Object> formatSchema = (Map<String, Object>) schemaMap.get("format");
-		assertThat(formatSchema).containsEntry("type", "object");
-		assertThat(formatSchema).containsKey("properties");
-		assertThat(formatSchema).containsKey("required");
-
-		var formatOnlyOptions = OpenClawChatOptions.builder().format("json").build();
-		assertThat(formatOnlyOptions.getOutputSchema()).isEqualTo("json");
-
-		var schemaRoundTrip = OpenClawChatOptions.builder().outputSchema(jsonSchemaAsText).build();
-		assertThat(schemaRoundTrip.getOutputSchema()).isEqualToIgnoringWhitespace(jsonSchemaAsText);
-	}
-
-	/**
-	 * Tests that setFormat("json") and getFormat() work correctly for simple JSON format.
-	 */
-	@Test
-	void testSimpleJsonFormatDirectAccess() {
-		var options = OpenClawChatOptions.builder().format("json").build();
-
-		assertThat(options.getFormat()).isEqualTo("json");
-
-		var optionsMap = options.toMap();
-		assertThat(optionsMap).containsEntry("format", "json");
-
-		// Verify it serializes correctly
-		assertThat(options.getFormat()).isInstanceOf(String.class);
-	}
-
-	/**
-	 * Tests getOutputSchema() properly handles all format types: null, String, and Map.
-	 */
-	@Test
-	void testGetOutputSchemaHandlesAllFormatTypes() {
-		var nullFormatOptions = OpenClawChatOptions.builder().build();
-		assertThat(nullFormatOptions.getOutputSchema()).isNull();
-
-		var stringFormatOptions = OpenClawChatOptions.builder().format("json").build();
-		assertThat(stringFormatOptions.getOutputSchema()).isEqualTo("json");
-		assertThat(stringFormatOptions.getOutputSchema()).doesNotContain("\"");
-
-		var jsonSchemaAsText = ResourceUtils.getText("classpath:country-json-schema.json");
-		var schemaFormatOptions = OpenClawChatOptions.builder().outputSchema(jsonSchemaAsText).build();
-		String retrievedSchema = schemaFormatOptions.getOutputSchema();
-
-		// Should be valid JSON
-		assertThat(retrievedSchema).isNotNull();
-		assertThat(retrievedSchema).contains("\"type\"");
-		assertThat(retrievedSchema).contains("\"properties\"");
-		assertThat(retrievedSchema).contains("\"required\"");
-
-		assertThat(retrievedSchema).isEqualToIgnoringWhitespace(jsonSchemaAsText);
-	}
-
-	/**
-	 * Tests that setOutputSchema() properly handles JSON Schema strings.
-	 */
-	@Test
-	void testSetOutputSchemaWithValidJsonSchema() {
-		var jsonSchemaAsText = ResourceUtils.getText("classpath:country-json-schema.json");
-
-		var options = OpenClawChatOptions.builder().outputSchema(jsonSchemaAsText).build();
-
-		// Format should be a Map, not a String
-		assertThat(options.getFormat()).isInstanceOf(Map.class);
-
-		// toMap() should contain the parsed schema
-		var optionsMap = options.toMap();
-		assertThat(optionsMap).containsKey("format");
-		assertThat(optionsMap.get("format")).isInstanceOf(Map.class);
-
-		// getOutputSchema() should return the original JSON string (ignoring whitespace)
-		assertThat(options.getOutputSchema()).isEqualToIgnoringWhitespace(jsonSchemaAsText);
-	}
-
 }

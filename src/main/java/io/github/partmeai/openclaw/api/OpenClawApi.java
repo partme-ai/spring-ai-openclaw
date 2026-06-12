@@ -16,32 +16,22 @@
 
 package io.github.partmeai.openclaw.api;
 
-import java.awt.*;
-import java.time.Duration;
-import java.time.Instant;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.function.Consumer;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonInclude.Include;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import io.github.partmeai.openclaw.api.common.OpenClawApiConstants;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
-import org.springframework.ai.chat.metadata.Usage;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
-import org.springframework.ai.model.ModelOptionsUtils;
 import org.springframework.ai.retry.RetryUtils;
 import org.springframework.http.HttpHeaders;
-import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
-import org.springframework.http.ResponseEntity;
 import org.springframework.util.Assert;
 import org.springframework.web.client.ResponseErrorHandler;
 import org.springframework.web.client.RestClient;
@@ -49,14 +39,18 @@ import org.springframework.web.reactive.function.client.WebClient;
 
 /**
  * Java Client for the OpenClaw Gateway OpenAI-compatible HTTP API.
- * Calls { /v1/chat/completions} as described in the Gateway documentation.
- *
- * @see <a href="https://docs.openclaw.ai/gateway/openai-http-api">OpenClaw OpenAI HTTP API</a>
- * @see <a href="https://docs.openclaw.ai/gateway/protocol">Gateway WebSocket Protocol</a>
+ * <p>
+ * Calls {@code /v1/chat/completions}, {@code /v1/models}, {@code /v1/embeddings},
+ * and {@code /v1/responses} as described in the Gateway documentation.
+ * <p>
+ * The {@code model} field uses OpenClaw agent-target routing:
+ * {@code openclaw/default}, {@code openclaw/<agentId>}.
+ * Use HTTP headers ({@code x-openclaw-model}, {@code x-openclaw-session-key}, etc.)
+ * to control backend model override, session routing, and channel context.
  *
  * @author Loong Wan
+ * @see <a href="https://docs.openclaw.ai/gateway/openai-http-api">OpenClaw OpenAI HTTP API</a>
  */
-// @formatter:off
 public final class OpenClawApi {
 
 	public static Builder builder() {
@@ -65,53 +59,62 @@ public final class OpenClawApi {
 
 	public static final String REQUEST_BODY_NULL_ERROR = "The request body can not be null.";
 
-	private static final Log logger = LogFactory.getLog(OpenClawApi.class);
+	private static final Logger logger = LoggerFactory.getLogger(OpenClawApi.class);
 
 	private final RestClient restClient;
 
 	private final WebClient webClient;
 
-	/**
-	 * Create a new OpenClawApi instance
-	 * @param baseUrl The base URL of the OpenClaw Gateway.
-	 * @param restClientBuilder The {@link RestClient.Builder} to use.
-     * @param webClientBuilder The {@link WebClient.Builder} to use.
-	 * @param responseErrorHandler Response error handler.
-	 */
-	private OpenClawApi(String baseUrl, RestClient.Builder restClientBuilder, WebClient.Builder webClientBuilder, ResponseErrorHandler responseErrorHandler) {
-		Consumer<HttpHeaders> defaultHeaders = headers -> {
-			headers.setContentType(MediaType.APPLICATION_JSON);
-			headers.setAccept(List.of(MediaType.APPLICATION_JSON));
-		};
-
+	private OpenClawApi(String baseUrl, RestClient.Builder restClientBuilder,
+			WebClient.Builder webClientBuilder, ResponseErrorHandler responseErrorHandler) {
 		this.restClient = restClientBuilder
 				.clone()
 				.baseUrl(baseUrl)
-				.defaultHeaders(defaultHeaders)
+				.defaultHeaders(headers -> {
+					headers.setContentType(MediaType.APPLICATION_JSON);
+					headers.setAccept(List.of(MediaType.APPLICATION_JSON));
+				})
 				.defaultStatusHandler(responseErrorHandler)
 				.build();
 
 		this.webClient = webClientBuilder
 				.clone()
 				.baseUrl(baseUrl)
-				.defaultHeaders(defaultHeaders)
+				.defaultHeaders(headers -> {
+					headers.setContentType(MediaType.APPLICATION_JSON);
+					headers.setAccept(List.of(MediaType.APPLICATION_JSON, MediaType.TEXT_EVENT_STREAM));
+				})
 				.build();
 	}
 
+	// --------------------------------------------------------------------------
+	// Chat Completions
+	// --------------------------------------------------------------------------
+
 	/**
-	 * Generate the next message in a chat with a provided model.
-	 * This is a streaming endpoint (controlled by the 'stream' request property), so
-	 * there will be a series of responses. The final response object will include
-	 * statistics and additional data from the request.
-	 * @param chatRequest Chat request.
+	 * Generate the next message in a chat with a provided model (non-streaming).
+	 * @param chatRequest Chat request with stream=false.
 	 * @return Chat response.
 	 */
 	public ChatResponse chat(ChatRequest chatRequest) {
+		return chat(chatRequest, Map.of());
+	}
+
+	/**
+	 * Generate the next message in a chat with a provided model (non-streaming),
+	 * with additional HTTP headers (e.g. x-openclaw-* headers).
+	 * @param chatRequest Chat request with stream=false.
+	 * @param extraHeaders Additional HTTP headers to include in the request.
+	 * @return Chat response.
+	 */
+	public ChatResponse chat(ChatRequest chatRequest, Map<String, String> extraHeaders) {
 		Assert.notNull(chatRequest, REQUEST_BODY_NULL_ERROR);
 		Assert.isTrue(!chatRequest.stream(), "Stream mode must be disabled.");
 
-		return this.restClient.post()
-			.uri("/v1/chat/completions")
+		var requestSpec = this.restClient.post()
+			.uri("/v1/chat/completions");
+		extraHeaders.forEach(requestSpec::header);
+		return requestSpec
 			.body(chatRequest)
 			.retrieve()
 			.body(ChatResponse.class);
@@ -119,116 +122,101 @@ public final class OpenClawApi {
 
 	/**
 	 * Streaming (SSE) response for the chat completion request.
- 	 * Handles SSE delta events, merges them into complete chat responses.
- 	 * @see <a href="https://docs.openclaw.ai/gateway/openai-http-api#streaming-sse">OpenClaw Streaming SSE</a>
-	 * @param chatRequest Chat request. The request must set the stream property to true.
+	 * Handles SSE delta events and merges them into complete chat responses.
+	 * @param chatRequest Chat request with stream=true.
 	 * @return Chat response as a {@link Flux} stream.
+	 * @see <a href="https://docs.openclaw.ai/gateway/openai-http-api#streaming-sse">OpenClaw Streaming SSE</a>
 	 */
 	public Flux<ChatResponse> streamingChat(ChatRequest chatRequest) {
+		return streamingChat(chatRequest, Map.of());
+	}
+
+	/**
+	 * Streaming (SSE) response for the chat completion request,
+	 * with additional HTTP headers (e.g. x-openclaw-* headers).
+	 * @param chatRequest Chat request with stream=true.
+	 * @param extraHeaders Additional HTTP headers to include in the request.
+	 * @return Chat response as a {@link Flux} stream.
+	 */
+	public Flux<ChatResponse> streamingChat(ChatRequest chatRequest, Map<String, String> extraHeaders) {
 		Assert.notNull(chatRequest, REQUEST_BODY_NULL_ERROR);
 		Assert.isTrue(chatRequest.stream(), "Request must set the stream property to true.");
 
-		AtomicBoolean isInsideTool = new AtomicBoolean(false);
-
-		return this.webClient.post()
+		var requestSpec = this.webClient.post()
 			.uri("/v1/chat/completions")
+			.accept(MediaType.TEXT_EVENT_STREAM);
+		extraHeaders.forEach(requestSpec::header);
+
+		return requestSpec
 			.body(Mono.just(chatRequest), ChatRequest.class)
 			.retrieve()
 			.bodyToFlux(ChatResponse.class)
-			.map(chunk -> {
-				if (OpenClawApiHelper.isStreamingToolCall(chunk)) {
-					isInsideTool.set(true);
-				}
-				return chunk;
-			})
-			// Group all chunks belonging to the same function call.
-			// Flux<ChatChatResponse> -> Flux<Flux<ChatChatResponse>>
-			.windowUntil(chunk -> {
-				if (isInsideTool.get() && OpenClawApiHelper.isStreamingDone(chunk)) {
-					isInsideTool.set(false);
-					return true;
-				}
-				return !isInsideTool.get();
-			})
-			// Merging the window chunks into a single chunk.
-			// Reduce the inner Flux<ChatChatResponse> window into a single
-			// Mono<ChatChatResponse>,
-			// Flux<Flux<ChatChatResponse>> -> Flux<Mono<ChatChatResponse>>
-			.concatMapIterable(window -> {
-				Mono<ChatResponse> monoChunk = window.reduce(
-						new ChatResponse(),
-						(previous, current) -> OpenClawApiHelper.merge(previous, current));
-				return List.of(monoChunk);
-			})
-			// Flux<Mono<ChatChatResponse>> -> Flux<ChatChatResponse>
-			.flatMap(mono -> mono)
-			.handle((data, sink) -> {
+			.handle((chunk, sink) -> {
 				if (logger.isTraceEnabled()) {
-					logger.trace(data);
+					logger.trace("SSE chunk: {}", chunk);
 				}
-				sink.next(data);
+				if (chunk.choices() != null && !chunk.choices().isEmpty()) {
+					sink.next(chunk);
+				}
 			});
 	}
 
-	/**
-	 * Generate embeddings from a model.
-	 * @param embeddingsRequest Embedding request.
-	 * @return Embeddings response.
-	 */
-	public EmbeddingsResponse embed(EmbeddingsRequest embeddingsRequest) {
-		Assert.notNull(embeddingsRequest, REQUEST_BODY_NULL_ERROR);
+	// --------------------------------------------------------------------------
+	// Responses
+	// --------------------------------------------------------------------------
 
-		return this.restClient.post()
-			.uri("/v1/embeddings")
-			.body(embeddingsRequest)
-			.retrieve()
-			.body(EmbeddingsResponse.class);
+	/**
+	 * Call the OpenAI-compatible {@code /v1/responses} endpoint.
+	 * <p>
+	 * More agent-native clients increasingly prefer this endpoint over
+	 * {@code /v1/chat/completions}.
+	 * @param responsesRequest The responses request body (as a generic Map for flexibility).
+	 * @return The responses response body.
+	 */
+	public Map<String, Object> responses(Map<String, Object> responsesRequest) {
+		return responses(responsesRequest, Map.of());
 	}
 
 	/**
-	 * List models that are available locally on the machine on the OpenClaw Gateway.
+	 * Call {@code /v1/responses} with additional HTTP headers.
+	 */
+	public Map<String, Object> responses(Map<String, Object> responsesRequest, Map<String, String> extraHeaders) {
+		Assert.notNull(responsesRequest, REQUEST_BODY_NULL_ERROR);
+		var requestSpec = this.restClient.post()
+			.uri("/v1/responses");
+		extraHeaders.forEach(requestSpec::header);
+		return requestSpec
+			.body(responsesRequest)
+			.retrieve()
+			.body(Map.class);
+	}
+
+	// --------------------------------------------------------------------------
+	// Models
+	// --------------------------------------------------------------------------
+
+	/**
+	 * List agent targets available on the OpenClaw Gateway.
+	 * Returns agent-target ids: {@code openclaw}, {@code openclaw/default},
+	 * and {@code openclaw/<agentId>} entries.
 	 */
 	public ListModelResponse listModels() {
 		return this.restClient.get()
-				.uri("/v1/models")
-				.retrieve()
-				.body(ListModelResponse.class);
+			.uri("/v1/models")
+			.retrieve()
+			.body(ListModelResponse.class);
 	}
 
 	/**
-	 * Show information about a model available locally on the machine on the OpenClaw Gateway.
+	 * Show information about a specific agent target on the OpenClaw Gateway.
+	 * @param modelId The agent-target model id (e.g. "openclaw/default").
 	 */
-	public ShowModelResponse showModel(ShowModelRequest showModelRequest) {
-		Assert.notNull(showModelRequest, "showModelRequest must not be null");
-		return this.restClient.post()
-				.uri("/api/show")
-				.body(showModelRequest)
-				.retrieve()
-				.body(ShowModelResponse.class);
-	}
-
-	/**
-     * Copy a model. Creates a model with another name from an existing model.
-     */
-	public ResponseEntity<Void> copyModel(CopyModelRequest copyModelRequest) {
-		Assert.notNull(copyModelRequest, "copyModelRequest must not be null");
-		return this.restClient.post()
-				.uri("/api/copy")
-				.body(copyModelRequest)
-				.retrieve()
-				.toBodilessEntity();
-	}
-
-	/**
-	 * Delete a model and its data.
-	 */
-	public ResponseEntity<Void> deleteModel(DeleteModelRequest deleteModelRequest) {
-		Assert.notNull(deleteModelRequest, "deleteModelRequest must not be null");
-		return this.restClient.method(HttpMethod.DELETE)
-				.uri("/api/delete")
-				.body(deleteModelRequest)
-				.retrieve()
-				.toBodilessEntity();
+	public ModelResponse getModel(String modelId) {
+		Assert.hasText(modelId, "modelId must not be empty");
+		return this.restClient.get()
+			.uri("/v1/models/{id}", modelId)
+			.retrieve()
+			.body(ModelResponse.class);
 	}
 
 	// --------------------------------------------------------------------------
@@ -236,179 +224,60 @@ public final class OpenClawApi {
 	// --------------------------------------------------------------------------
 
 	/**
-	 * Download a model. (Not supported by OpenClaw Gateway.) Cancelled pulls are resumed from where they left off,
-	 * and multiple calls will share the same download progress.
+	 * Generate embeddings using the OpenClaw Gateway.
+	 * @param embeddingsRequest Embedding request.
+	 * @return Embeddings response.
 	 */
-	public Flux<ProgressResponse> pullModel(PullModelRequest pullModelRequest) {
-		Assert.notNull(pullModelRequest, "pullModelRequest must not be null");
-		Assert.isTrue(pullModelRequest.stream(), "Request must set the stream property to true.");
-
-		return this.webClient.post()
-				.uri("/api/pull")
-				.bodyValue(pullModelRequest)
-				.retrieve()
-				.bodyToFlux(ProgressResponse.class);
+	public EmbeddingsResponse embed(EmbeddingsRequest embeddingsRequest) {
+		return embed(embeddingsRequest, Map.of());
 	}
 
 	/**
-	 * Chat message object.
-	 *
-	 * @param role The role of the message of type {@link Role}.
-	 * @param content The content of the message.
-	 * @param images The list of base64-encoded images to send with the message.
-	 * 				 Requires multimodal models such as llava or bakllava.
-	 * @param toolCalls The list of tools that the model wants to use.
-	 * @param toolName The name of the tool that was executed to inform the model of the result.
-	 * @param thinking The model's thinking process. Requires thinking models such as qwen3.
+	 * Generate embeddings using the OpenClaw Gateway, with additional headers.
+	 * @param embeddingsRequest Embedding request.
+	 * @param extraHeaders Additional HTTP headers.
+	 * @return Embeddings response.
+	 */
+	public EmbeddingsResponse embed(EmbeddingsRequest embeddingsRequest, Map<String, String> extraHeaders) {
+		Assert.notNull(embeddingsRequest, REQUEST_BODY_NULL_ERROR);
+		var requestSpec = this.restClient.post()
+			.uri("/v1/embeddings");
+		extraHeaders.forEach(requestSpec::header);
+		return requestSpec
+			.body(embeddingsRequest)
+			.retrieve()
+			.body(EmbeddingsResponse.class);
+	}
+
+	// ========================================================================
+	// Request / Response Models — Chat Completions
+	// ========================================================================
+
+	/**
+	 * OpenAI-compatible Chat Completions request body.
+	 * <p>
+	 * The {@code model} field uses OpenClaw agent-target routing
+	 * ({@code openclaw/default}, {@code openclaw/<agentId>}, etc.).
+	 * Backend provider/model overrides go in the {@code x-openclaw-model} HTTP header.
 	 */
 	@JsonInclude(Include.NON_NULL)
 	@JsonIgnoreProperties(ignoreUnknown = true)
-	public record Message(
-			@JsonProperty("role") Role role,
-			@JsonProperty("content") String content,
-			@JsonProperty("images") List<String> images,
-			@JsonProperty("tool_calls") List<ToolCall> toolCalls,
-			@JsonProperty("tool_name") String toolName,
-			@JsonProperty("tool_call_id") String toolCallId,
-			@JsonProperty("thinking") String thinking
-	) {
-
-		public static Builder builder(Role role) {
-			return new Builder(role);
-		}
-
-		/**
-		 * The role of the message in the conversation.
-		 */
-		public enum Role {
-
-			/**
-			 * System message type used as instructions to the model.
-			 */
-			@JsonProperty("system")
-			SYSTEM,
-			/**
-			 * User message type.
-			 */
-			@JsonProperty("user")
-			USER,
-			/**
-			 * Assistant message type. Usually the response from the model.
-			 */
-			@JsonProperty("assistant")
-			ASSISTANT,
-			/**
-			 * Tool message.
-			 */
-			@JsonProperty("tool")
-			TOOL
-
-		}
-
-		/**
-		 * The relevant tool call.
-		 *
-		 * @param id The id of the tool call.
-		 * @param function The function definition.
-		 */
-		@JsonInclude(Include.NON_NULL)
-		public record ToolCall(
-			@JsonProperty("id") String id,
-			@JsonProperty("function") ToolCallFunction function) {
-		}
-
-		/**
-		 * The function definition.
-		 *
-		 * @param name The name of the function.
-		 * @param arguments The arguments that the model expects you to pass to the function.
-		 * @param index The index of the function call in the list of tool calls.
-		 */
-		@JsonInclude(Include.NON_NULL)
-		public record ToolCallFunction(
-			@JsonProperty("name") String name,
-			@JsonProperty("arguments") Map<String, Object> arguments,
-			@JsonProperty("index") Integer index
-		) {
-
-			public ToolCallFunction(String name, Map<String, Object> arguments) {
-				this(name, arguments, null);
-			}
-
-		}
-
-		public static final class Builder {
-
-			private final Role role;
-			private String content;
-			private List<String> images;
-			private List<ToolCall> toolCalls;
-			private String toolName;
-			private String toolCallId;
-			private String thinking;
-
-			public Builder(Role role) {
-				this.role = role;
-			}
-
-			public Builder content(String content) {
-				this.content = content;
-				return this;
-			}
-
-			public Builder images(List<String> images) {
-				this.images = images;
-				return this;
-			}
-
-			public Builder toolCalls(List<ToolCall> toolCalls) {
-				this.toolCalls = toolCalls;
-				return this;
-			}
-
-			public Builder toolName(String toolName) {
-				this.toolName = toolName;
-				return this;
-			}
-
-			public Builder thinking(String thinking) {
-				this.thinking = thinking;
-				return this;
-			}
-
-			public Message build() {
-				return new Message(this.role, this.content, this.images, this.toolCalls, this.toolName, this.toolCallId, this.thinking);
-			}
-		}
-	}
-
-	/**
-	 * Chat request object.
-	 *
-	 * @param model The model to use for completion. It should be a name a valid OpenClaw agent target such as "openclaw/default".
-	 * @param messages The list of messages in the chat. This can be used to keep a chat memory.
-	 * @param stream Whether to stream the response. If false, the response will be returned as a single response object rather than a stream of objects.
-	 * @param format The format to return the response in. It can either be the String "json" or a Map containing a JSON Schema definition.
-	 * @param keepAlive Controls how long the model will stay loaded into memory following this request (default: 5m).
-	 * @param tools List of tools the model has access to.
-	 * @param options Model-specific options. For example, "temperature" can be set through this field, if the model supports it.
-	 * @param think Think controls whether thinking/reasoning models will think before responding.
-	 * You can use the {@link OpenClawChatOptions} builder to create the options then {@link OpenClawChatOptions#toMap()} to convert the options into a map.
-	 *
-	 * @see <a href=
-	 * "https://docs.openclaw.ai/gateway/openai-http-api">OpenClaw Chat Completions API</a>
-	 * @see <a href="https://docs.openclaw.ai/gateway/protocol">OpenClaw Gateway Protocol</a>
-	 */
-	@JsonInclude(Include.NON_NULL)
 	public record ChatRequest(
 			@JsonProperty("model") String model,
 			@JsonProperty("messages") List<Message> messages,
 			@JsonProperty("stream") Boolean stream,
-			@JsonProperty("format") Object format,
-			@JsonProperty("keep_alive") String keepAlive,
 			@JsonProperty("tools") List<Tool> tools,
-			@JsonProperty("options") Map<String, Object> options,
-			@JsonProperty("think") ThinkOption think
+			@JsonProperty("tool_choice") Object toolChoice,
+			@JsonProperty("max_completion_tokens") Integer maxCompletionTokens,
+			@JsonProperty("max_tokens") Integer maxTokens,
+			@JsonProperty("temperature") Double temperature,
+			@JsonProperty("top_p") Double topP,
+			@JsonProperty("frequency_penalty") Double frequencyPenalty,
+			@JsonProperty("presence_penalty") Double presencePenalty,
+			@JsonProperty("seed") Integer seed,
+			@JsonProperty("stop") Object stop,
+			@JsonProperty("user") String user,
+			@JsonProperty("stream_options") StreamOptions streamOptions
 	) {
 
 		public static Builder builder(String model) {
@@ -416,58 +285,42 @@ public final class OpenClawApi {
 		}
 
 		/**
-		 * Represents a tool the model may call. Currently, only functions are supported as a tool.
-		 *
-		 * @param type The type of the tool. Currently, only 'function' is supported.
-		 * @param function The function definition.
+		 * Stream options for chat completion requests.
 		 */
 		@JsonInclude(Include.NON_NULL)
+		public record StreamOptions(
+				@JsonProperty("include_usage") Boolean includeUsage
+		) {}
+
+		/**
+		 * Represents a tool the model may call. Currently, only functions are supported.
+		 */
+		@JsonInclude(Include.NON_NULL)
+		@JsonIgnoreProperties(ignoreUnknown = true)
 		public record Tool(
 				@JsonProperty("type") Type type,
 				@JsonProperty("function") Function function) {
 
-			/**
-			 * Create a tool of type 'function' and the given function definition.
-			 * @param function function definition.
-			 */
 			public Tool(Function function) {
 				this(Type.FUNCTION, function);
 			}
 
-			/**
-			 * Create a tool of type 'function' and the given function definition.
-			 */
 			public enum Type {
-				/**
-				 * Function tool type.
-				 */
-				@JsonProperty("function")
-				FUNCTION
+				@JsonProperty("function") FUNCTION
 			}
 
 			/**
 			 * Function definition.
-			 *
-			 * @param name The name of the function to be called. Must be a-z, A-Z, 0-9, or contain underscores and dashes.
-			 * @param description A description of what the function does, used by the model to choose when and how to call
-			 * the function.
-			 * @param parameters The parameters the functions accepts, described as a JSON Schema object. To describe a
-			 * function that accepts no parameters, provide the value {"type": "object", "properties": {}}.
 			 */
 			public record Function(
-				@JsonProperty("name") String name,
-				@JsonProperty("description") String description,
-				@JsonProperty("parameters") Map<String, Object> parameters) {
+					@JsonProperty("name") String name,
+					@JsonProperty("description") String description,
+					@JsonProperty("parameters") Map<String, Object> parameters) {
 
-				/**
-				 * Create tool function definition.
-				 *
-				 * @param description tool function description.
-				 * @param name tool function name.
-				 * @param jsonSchema tool function schema as json.
-				 */
-				public Function(String description, String name, String jsonSchema) {
-					this(description, name, ModelOptionsUtils.jsonToMap(jsonSchema));
+				public Function(String name, String description, Map<String, Object> parameters) {
+					this.name = name;
+					this.description = description;
+					this.parameters = parameters;
 				}
 			}
 		}
@@ -477,11 +330,18 @@ public final class OpenClawApi {
 			private final String model;
 			private List<Message> messages = List.of();
 			private boolean stream = false;
-			private Object format;
-			private String keepAlive;
 			private List<Tool> tools = List.of();
-			private Map<String, Object> options = Map.of();
-			private ThinkOption think;
+			private Object toolChoice;
+			private Integer maxCompletionTokens;
+			private Integer maxTokens;
+			private Double temperature;
+			private Double topP;
+			private Double frequencyPenalty;
+			private Double presencePenalty;
+			private Integer seed;
+			private Object stop;
+			private String user;
+			private StreamOptions streamOptions;
 
 			public Builder(String model) {
 				Assert.notNull(model, "The model can not be null.");
@@ -498,321 +358,293 @@ public final class OpenClawApi {
 				return this;
 			}
 
-			public Builder format(Object format) {
-				this.format = format;
-				return this;
-			}
-
-			public Builder keepAlive(String keepAlive) {
-				this.keepAlive = keepAlive;
-				return this;
-			}
-
 			public Builder tools(List<Tool> tools) {
 				this.tools = tools;
 				return this;
 			}
 
-			public Builder options(Map<String, Object> options) {
-				Objects.requireNonNull(options, "The options can not be null.");
-				this.options = OpenClawChatOptions.filterNonSupportedFields(options);
+			public Builder toolChoice(Object toolChoice) {
+				this.toolChoice = toolChoice;
 				return this;
 			}
 
-			public Builder think(ThinkOption think) {
-				this.think = think;
+			public Builder maxCompletionTokens(Integer maxCompletionTokens) {
+				this.maxCompletionTokens = maxCompletionTokens;
 				return this;
 			}
 
-			/**
-			 * Enable thinking mode for the model.
-			 * @return this builder
-			 */
-			public Builder enableThinking() {
-				this.think = ThinkOption.ThinkBoolean.ENABLED;
+			public Builder maxTokens(Integer maxTokens) {
+				this.maxTokens = maxTokens;
 				return this;
 			}
 
-			/**
-			 * Disable thinking mode for the model.
-			 * @return this builder
-			 */
-			public Builder disableThinking() {
-				this.think = ThinkOption.ThinkBoolean.DISABLED;
+			public Builder temperature(Double temperature) {
+				this.temperature = temperature;
 				return this;
 			}
 
-			/**
-			 * Set thinking level to "low" (for GPT-OSS model).
-			 * @return this builder
-			 */
-			public Builder thinkLow() {
-				this.think = ThinkOption.ThinkLevel.LOW;
+			public Builder topP(Double topP) {
+				this.topP = topP;
 				return this;
 			}
 
-			/**
-			 * Set thinking level to "medium" (for GPT-OSS model).
-			 * @return this builder
-			 */
-			public Builder thinkMedium() {
-				this.think = ThinkOption.ThinkLevel.MEDIUM;
+			public Builder frequencyPenalty(Double frequencyPenalty) {
+				this.frequencyPenalty = frequencyPenalty;
 				return this;
 			}
 
-			/**
-			 * Set thinking level to "high" (for GPT-OSS model).
-			 * @return this builder
-			 */
-			public Builder thinkHigh() {
-				this.think = ThinkOption.ThinkLevel.HIGH;
+			public Builder presencePenalty(Double presencePenalty) {
+				this.presencePenalty = presencePenalty;
 				return this;
 			}
 
-			public Builder options(OpenClawChatOptions options) {
-				Objects.requireNonNull(options, "The options can not be null.");
-				this.options = OpenClawChatOptions.filterNonSupportedFields(options.toMap());
+			public Builder seed(Integer seed) {
+				this.seed = seed;
+				return this;
+			}
+
+			public Builder stop(Object stop) {
+				this.stop = stop;
+				return this;
+			}
+
+			public Builder user(String user) {
+				this.user = user;
+				return this;
+			}
+
+			public Builder streamOptions(StreamOptions streamOptions) {
+				this.streamOptions = streamOptions;
 				return this;
 			}
 
 			public ChatRequest build() {
-				return new ChatRequest(this.model, this.messages, this.stream, this.format, this.keepAlive, this.tools, this.options, this.think);
+				return new ChatRequest(model, messages, stream, tools, toolChoice, maxCompletionTokens, maxTokens,
+						temperature, topP, frequencyPenalty, presencePenalty, seed, stop, user, streamOptions);
 			}
 		}
 	}
 
-	// --------------------------------------------------------------------------
-	// Models
-	// --------------------------------------------------------------------------
-
-		/** OpenAI-compatible chat completion choice. */
+	/**
+	 * A message in a chat conversation.
+	 */
 	@JsonInclude(Include.NON_NULL)
 	@JsonIgnoreProperties(ignoreUnknown = true)
-	public record Choice(
-			@JsonProperty("index") Integer index,
-			@JsonProperty("message") Message message,
-			@JsonProperty("delta") Message delta,
-			@JsonProperty("finish_reason") String finishReason) {}
+	public record Message(
+			@JsonProperty("role") Role role,
+			@JsonProperty("content") String content,
+			@JsonProperty("tool_calls") List<ToolCall> toolCalls,
+			@JsonProperty("tool_call_id") String toolCallId,
+			@JsonProperty("name") String name
+	) {
 
-	/** OpenAI-compatible usage statistics. */
-	@JsonInclude(Include.NON_NULL)
-	@JsonIgnoreProperties(ignoreUnknown = true)
-	public record Usage(
-			@JsonProperty("prompt_tokens") Integer promptTokens,
-			@JsonProperty("completion_tokens") Integer completionTokens,
-			@JsonProperty("total_tokens") Integer totalTokens) {}
+		public static Builder builder(Role role) {
+			return new Builder(role);
+		}
 
-/**
-	 * OpenClaw chat response object from /v1/chat/completions.
-	 *
-	 * @param model The model used for generating the response.
-	 * @param createdAt The timestamp of the response generation.
-	 * @param message The response {@link Message} with {@link Message.Role#ASSISTANT}.
-	 * @param doneReason The reason the model stopped generating text.
-	 * @param done Whether this is the final response. For streaming response only the
-	 * last message is marked as done. If true, this response may be followed by another
-	 * response with the following, additional fields: context, prompt_eval_count,
-	 * prompt_eval_duration, eval_count, eval_duration.
-	 * @param totalDuration Time spent generating the response.
-	 * @param loadDuration Time spent loading the model.
-	 * @param promptEvalCount Number of tokens in the prompt.
-	 * @param promptEvalDuration Time spent evaluating the prompt.
-	 * @param evalCount Number of tokens in the response.
-	 * @param evalDuration Time spent generating the response.
-	 *
-	 * @see <a href=
-	 * "https://docs.openclaw.ai/gateway/openai-http-api">OpenClaw Chat Completions API</a>
-	 * @see <a href="https://docs.openclaw.ai/gateway/protocol">OpenClaw Gateway Protocol</a>
+		/**
+		 * The role of the message in the conversation.
+		 */
+		public enum Role {
+			@JsonProperty("system") SYSTEM,
+			@JsonProperty("user") USER,
+			@JsonProperty("assistant") ASSISTANT,
+			@JsonProperty("tool") TOOL
+		}
+
+		/**
+		 * A tool call made by the model.
+		 */
+		@JsonInclude(Include.NON_NULL)
+		@JsonIgnoreProperties(ignoreUnknown = true)
+		public record ToolCall(
+				@JsonProperty("id") String id,
+				@JsonProperty("type") String type,
+				@JsonProperty("function") ToolCallFunction function
+		) {}
+
+		/**
+		 * The function call details.
+		 */
+		@JsonInclude(Include.NON_NULL)
+		@JsonIgnoreProperties(ignoreUnknown = true)
+		public record ToolCallFunction(
+				@JsonProperty("name") String name,
+				@JsonProperty("arguments") String arguments
+		) {}
+
+		public static final class Builder {
+
+			private final Role role;
+			private String content;
+			private List<ToolCall> toolCalls;
+			private String toolCallId;
+			private String name;
+
+			public Builder(Role role) {
+				this.role = role;
+			}
+
+			public Builder content(String content) {
+				this.content = content;
+				return this;
+			}
+
+			public Builder toolCalls(List<ToolCall> toolCalls) {
+				this.toolCalls = toolCalls;
+				return this;
+			}
+
+			public Builder toolCallId(String toolCallId) {
+				this.toolCallId = toolCallId;
+				return this;
+			}
+
+			public Builder name(String name) {
+				this.name = name;
+				return this;
+			}
+
+			public Message build() {
+				return new Message(role, content, toolCalls, toolCallId, name);
+			}
+		}
+	}
+
+	/**
+	 * OpenAI-compatible Chat Completions response.
 	 */
 	@JsonInclude(Include.NON_NULL)
 	@JsonIgnoreProperties(ignoreUnknown = true)
 	public record ChatResponse(
-			@JsonProperty("model") String model,
-			@JsonProperty("created_at") Instant createdAt,
-			@JsonProperty("message") Message message,
-			@JsonProperty("done_reason") String doneReason,
-			@JsonProperty("done") Boolean done,
-			@JsonProperty("total_duration") Long totalDuration,
-			@JsonProperty("load_duration") Long loadDuration,
-			@JsonProperty("prompt_eval_count") Integer promptEvalCount,
-			@JsonProperty("prompt_eval_duration") Long promptEvalDuration,
-			@JsonProperty("eval_count") Integer evalCount,
-			@JsonProperty("eval_duration") Long evalDuration,
 			@JsonProperty("id") String id,
+			@JsonProperty("object") String object,
 			@JsonProperty("created") Long created,
+			@JsonProperty("model") String model,
 			@JsonProperty("choices") List<Choice> choices,
 			@JsonProperty("usage") Usage usage
 	) {
-		ChatResponse() {
-			this(null, null, null, null, null, null, null, null, null, null, null,
-					null, null, null, null);
-		}
-
-		public Duration getTotalDuration() {
-			return (this.totalDuration() != null) ? Duration.ofNanos(this.totalDuration()) : null;
-		}
-
-		public Duration getLoadDuration() {
-			return (this.loadDuration() != null) ? Duration.ofNanos(this.loadDuration()) : null;
-		}
-
-		public Duration getPromptEvalDuration() {
-			return (this.promptEvalDuration() != null) ? Duration.ofNanos(this.promptEvalDuration()) : null;
-		}
-
-		public Duration getEvalDuration() {
-			if (this.evalDuration() == null) {
-				return null;
-			}
-			return Duration.ofNanos(this.evalDuration());
-			// return (this.evalDuration() != null)? Duration.ofNanos(this.evalDuration()) : null;
-		}
-	}
-
-	/**
-	 * Generate embeddings from a model.
-	 *
-	 * @param model The name of model to generate embeddings from.
-	 * @param input The text or list of text to generate embeddings for.
-	 * @param keepAlive Controls how long the model will stay loaded into memory following the request (default: 5m).
-	 * @param options Additional model parameters listed in the documentation for the
-	 * @param truncate Truncates the end of each input to fit within context length.
-	 *  Returns error if false and context length is exceeded. Defaults to true.
-	 */
-	@JsonInclude(Include.NON_NULL)
-	public record EmbeddingsRequest(
-			@JsonProperty("model") String model,
-			@JsonProperty("input") List<String> input,
-			@JsonProperty("keep_alive") String keepAlive,
-			@JsonProperty("options") Map<String, Object> options,
-			@JsonProperty("truncate") Boolean truncate,
-			@JsonProperty("dimensions") Integer dimensions) {
 
 		/**
-		 * Shortcut constructor to create a EmbeddingRequest without options.
-		 * @param model The name of model to generate embeddings from.
-		 * @param input The text or list of text to generate embeddings for.
+		 * A single completion choice. In non-streaming mode, {@code message} is populated.
+		 * In streaming mode, {@code delta} contains the incremental update.
+		 */
+		@JsonInclude(Include.NON_NULL)
+		@JsonIgnoreProperties(ignoreUnknown = true)
+		public record Choice(
+				@JsonProperty("index") Integer index,
+				@JsonProperty("message") Message message,
+				@JsonProperty("delta") Message delta,
+				@JsonProperty("finish_reason") String finishReason
+		) {}
+
+		/**
+		 * Token usage statistics.
+		 */
+		@JsonInclude(Include.NON_NULL)
+		@JsonIgnoreProperties(ignoreUnknown = true)
+		public record Usage(
+				@JsonProperty("prompt_tokens") Integer promptTokens,
+				@JsonProperty("completion_tokens") Integer completionTokens,
+				@JsonProperty("total_tokens") Integer totalTokens
+		) {}
+	}
+
+	// ========================================================================
+	// Request / Response Models — Models
+	// ========================================================================
+
+	/**
+	 * Response from GET /v1/models — lists agent-target ids.
+	 */
+	@JsonInclude(Include.NON_NULL)
+	@JsonIgnoreProperties(ignoreUnknown = true)
+	public record ListModelResponse(
+			@JsonProperty("object") String object,
+			@JsonProperty("data") List<ModelData> data
+	) {}
+
+	/**
+	 * An individual model entry in the list.
+	 */
+	@JsonInclude(Include.NON_NULL)
+	@JsonIgnoreProperties(ignoreUnknown = true)
+	public record ModelData(
+			@JsonProperty("id") String id,
+			@JsonProperty("object") String object,
+			@JsonProperty("created") Long created,
+			@JsonProperty("owned_by") String ownedBy
+	) {}
+
+	/**
+	 * Response from GET /v1/models/{id}.
+	 */
+	@JsonInclude(Include.NON_NULL)
+	@JsonIgnoreProperties(ignoreUnknown = true)
+	public record ModelResponse(
+			@JsonProperty("id") String id,
+			@JsonProperty("object") String object,
+			@JsonProperty("created") Long created,
+			@JsonProperty("owned_by") String ownedBy
+	) {}
+
+	// ========================================================================
+	// Request / Response Models — Embeddings
+	// ========================================================================
+
+	/**
+	 * OpenAI-compatible embeddings request.
+	 */
+	@JsonInclude(Include.NON_NULL)
+	@JsonIgnoreProperties(ignoreUnknown = true)
+	public record EmbeddingsRequest(
+			@JsonProperty("model") String model,
+			@JsonProperty("input") Object input,
+			@JsonProperty("dimensions") Integer dimensions,
+			@JsonProperty("user") String user
+	) {
+
+		/**
+		 * Convenience constructor for single string input.
 		 */
 		public EmbeddingsRequest(String model, String input) {
-			this(model, List.of(input), null, null, null, null);
+			this(model, (Object) input, null, null);
+		}
+
+		/**
+		 * Convenience constructor for list-of-strings input.
+		 */
+		public EmbeddingsRequest(String model, List<String> input) {
+			this(model, (Object) input, null, null);
 		}
 	}
 
 	/**
-	 * The response object returned from the /embedding endpoint.
-	 * @param model The model used for generating the embeddings.
-	 * @param embeddings The list of embeddings generated from the model.
-	 * Each embedding (list of doubles) corresponds to a single input text.
-	 * @param totalDuration The total time spent generating the embeddings.
-	 * @param loadDuration The time spent loading the model.
-	 * @param promptEvalCount The number of tokens in the prompt.
+	 * OpenAI-compatible embeddings response.
 	 */
 	@JsonInclude(Include.NON_NULL)
 	@JsonIgnoreProperties(ignoreUnknown = true)
 	public record EmbeddingsResponse(
+			@JsonProperty("object") String object,
+			@JsonProperty("data") List<EmbeddingData> data,
 			@JsonProperty("model") String model,
-			@JsonProperty("embeddings") List<float[]> embeddings,
-			@JsonProperty("total_duration") Long totalDuration,
-			@JsonProperty("load_duration") Long loadDuration,
-			@JsonProperty("prompt_eval_count") Integer promptEvalCount) {
+			@JsonProperty("usage") ChatResponse.Usage usage
+	) {}
 
-	}
-
+	/**
+	 * A single embedding vector entry.
+	 */
 	@JsonInclude(Include.NON_NULL)
 	@JsonIgnoreProperties(ignoreUnknown = true)
-	public record Model(
-			@JsonProperty("name") String name,
-			@JsonProperty("model") String model,
-			@JsonProperty("modified_at") Instant modifiedAt,
-			@JsonProperty("size") Long size,
-			@JsonProperty("digest") String digest,
-			@JsonProperty("details") Details details
-	) {
-		@JsonInclude(Include.NON_NULL)
-		@JsonIgnoreProperties(ignoreUnknown = true)
-		public record Details(
-				@JsonProperty("parent_model") String parentModel,
-				@JsonProperty("format") String format,
-				@JsonProperty("family") String family,
-				@JsonProperty("families") List<String> families,
-				@JsonProperty("parameter_size") String parameterSize,
-				@JsonProperty("quantization_level") String quantizationLevel
-		) { }
-	}
+	public record EmbeddingData(
+			@JsonProperty("object") String object,
+			@JsonProperty("index") Integer index,
+			@JsonProperty("embedding") List<Float> embedding
+	) {}
 
-	@JsonInclude(Include.NON_NULL)
-	@JsonIgnoreProperties(ignoreUnknown = true)
-	public record ListModelResponse(
-			@JsonProperty("models") List<Model> models
-	) { }
-
-	@JsonInclude(Include.NON_NULL)
-	public record ShowModelRequest(
-			@JsonProperty("model") String model,
-			@JsonProperty("system") String system,
-			@JsonProperty("verbose") Boolean verbose,
-			@JsonProperty("options") Map<String, Object> options
-	) {
-		public ShowModelRequest(String model) {
-			this(model, null, null, null);
-		}
-	}
-
-	@JsonInclude(Include.NON_NULL)
-	@JsonIgnoreProperties(ignoreUnknown = true)
-	public record ShowModelResponse(
-			@JsonProperty("license") String license,
-			@JsonProperty("modelfile") String modelfile,
-			@JsonProperty("parameters") String parameters,
-			@JsonProperty("template") String template,
-			@JsonProperty("system") String system,
-			@JsonProperty("details") Model.Details details,
-			@JsonProperty("messages") List<Message> messages,
-			@JsonProperty("model_info") Map<String, Object> modelInfo,
-			@JsonProperty("projector_info") Map<String, Object> projectorInfo,
-			@JsonProperty("capabilities") List<String> capabilities,
-			@JsonProperty("modified_at") Instant modifiedAt
-	) { }
-
-	@JsonInclude(Include.NON_NULL)
-	public record CopyModelRequest(
-			@JsonProperty("source") String source,
-			@JsonProperty("destination") String destination
-	) { }
-
-	@JsonInclude(Include.NON_NULL)
-	public record DeleteModelRequest(
-			@JsonProperty("model") String model
-	) { }
-
-	@JsonInclude(Include.NON_NULL)
-	public record PullModelRequest(
-			@JsonProperty("model") String model,
-			@JsonProperty("insecure") boolean insecure,
-			@JsonProperty("username") String username,
-			@JsonProperty("password") String password,
-			@JsonProperty("stream") boolean stream
-	) {
-		public PullModelRequest {
-			if (!stream) {
-				logger.warn("Enforcing streaming of the model pull request");
-			}
-			stream = true;
-		}
-
-		public PullModelRequest(String model) {
-			this(model, false, null, null, true);
-		}
-	}
-
-	@JsonInclude(Include.NON_NULL)
-	@JsonIgnoreProperties(ignoreUnknown = true)
-	public record ProgressResponse(
-			@JsonProperty("status") String status,
-			@JsonProperty("digest") String digest,
-			@JsonProperty("total") Long total,
-			@JsonProperty("completed") Long completed
-	) { }
+	// ========================================================================
+	// Builder
+	// ========================================================================
 
 	public static final class Builder {
 
@@ -849,9 +681,8 @@ public final class OpenClawApi {
 		}
 
 		public OpenClawApi build() {
-			return new OpenClawApi(this.baseUrl, this.restClientBuilder, this.webClientBuilder, this.responseErrorHandler);
+			return new OpenClawApi(this.baseUrl, this.restClientBuilder, this.webClientBuilder,
+					this.responseErrorHandler);
 		}
-
 	}
 }
-// @formatter:on

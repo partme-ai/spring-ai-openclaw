@@ -194,7 +194,7 @@ public class OpenClawRuntimeHintsTests {
 		OpenClawRuntimeHints openclawRuntimeHints = new OpenClawRuntimeHints();
 		openclawRuntimeHints.registerHints(runtimeHints, null);
 
-		// Ollama should only register reflection hints, not proxy hints
+		// OpenClaw should only register reflection hints, not proxy hints
 		assertThat(runtimeHints.proxies().jdkProxyHints().count()).isEqualTo(0);
 	}
 
@@ -204,7 +204,7 @@ public class OpenClawRuntimeHintsTests {
 		OpenClawRuntimeHints openclawRuntimeHints = new OpenClawRuntimeHints();
 		openclawRuntimeHints.registerHints(runtimeHints, null);
 
-		// Ollama should only register reflection hints, not serialization hints
+		// OpenClaw should only register reflection hints, not serialization hints
 		assertThat(runtimeHints.serialization().javaSerializationHints().count()).isEqualTo(0);
 	}
 

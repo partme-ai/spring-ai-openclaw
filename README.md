@@ -7,6 +7,8 @@ Spring AI 模型集成：将 OpenClaw Gateway 桥接到 Spring AI 的 `ChatModel
 - `POST /v1/chat/completions` → `ChatModel`（流式 + 非流式）
 - `POST /v1/embeddings` → `EmbeddingModel`
 - `GET /v1/models` → 模型列表
+- `GET /v1/models/{id}` → 单个模型信息
+- `POST /v1/responses` → OpenAI Responses API
 
 ## 快速开始
 
@@ -30,6 +32,8 @@ spring:
       gateway-auth-token: your-gateway-token
       model: openclaw/default
 ```
+
+**认证说明：** 需要在 `RestClient.Builder` 和 `WebClient.Builder` 中手动配置 `Authorization: Bearer <token>` 请求头。参考下方代码示例。
 
 ### 3. 注入使用
 
@@ -77,28 +81,28 @@ OpenClawChatOptions options = OpenClawChatOptions.builder()
 
 ### 覆盖后端模型
 
-通过 `x-openclaw-model` 头覆盖 agent 使用的后端模型：
+通过 `x-openclaw-model` HTTP 请求头覆盖 agent 使用的后端模型：
 
 ```java
 OpenClawChatOptions options = OpenClawChatOptions.builder()
     .model("openclaw/default")
-    .openclawModel("openai/gpt-5.4")  // 覆盖后端模型
+    .xOpenclawModel("openai/gpt-5.4")  // → HTTP 请求头: x-openclaw-model
     .build();
 ```
 
 ### 会话路由
 
 ```java
-// 通过 user 字段派生稳定 session key
+// 通过 user 字段派生稳定 session key（作为 JSON 请求体字段发送）
 OpenClawChatOptions options = OpenClawChatOptions.builder()
     .model("openclaw/default")
     .user("conv:my-conversation-id")
     .build();
 
-// 通过 x-openclaw-session-key 显式控制
+// 通过 x-openclaw-session-key 请求头显式控制
 OpenClawChatOptions options = OpenClawChatOptions.builder()
     .model("openclaw/default")
-    .openclawSessionKey("my-session-key")
+    .xOpenclawSessionKey("my-session-key")  // → HTTP 请求头: x-openclaw-session-key
     .build();
 ```
 
@@ -107,7 +111,22 @@ OpenClawChatOptions options = OpenClawChatOptions.builder()
 ```java
 OpenClawChatOptions options = OpenClawChatOptions.builder()
     .model("openclaw/default")
-    .openclawMessageChannel("slack")
+    .xOpenclawMessageChannel("slack")  // → HTTP 请求头: x-openclaw-message-channel
+    .build();
+```
+
+### 标准 OpenAI 采样参数
+
+```java
+OpenClawChatOptions options = OpenClawChatOptions.builder()
+    .model("openclaw/default")
+    .temperature(0.7)
+    .topP(0.9)
+    .frequencyPenalty(0.5)
+    .presencePenalty(0.3)
+    .seed(42)
+    .stop(List.of("END"))
+    .maxTokens(2048)  // → JSON 请求体: max_completion_tokens
     .build();
 ```
 
@@ -118,19 +137,59 @@ OpenClawChatOptions options = OpenClawChatOptions.builder()
 | `spring.ai.openclaw.base-url` | `http://localhost:18789` | Gateway HTTP 根地址 |
 | `spring.ai.openclaw.gateway-auth-token` | | 控制面认证令牌 (`gateway.auth.token`) |
 | `spring.ai.openclaw.gateway-auth-password` | | 控制面密码 (`gateway.auth.password`) |
-| `spring.ai.openclaw.hooks-token` | | Webhook 令牌 (`hooks.token`) |
 | `spring.ai.openclaw.model` | `openclaw/default` | 默认 agent 目标模型 |
 | `spring.ai.openclaw.connect-timeout-millis` | `15000` | 连接超时 |
 | `spring.ai.openclaw.read-timeout-millis` | `120000` | 读取超时 |
 | `spring.ai.openclaw.verify-ssl` | `true` | 是否校验 HTTPS 证书 |
+
+## API 参考
+
+### ChatRequest 请求体字段
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `model` | String | Agent 目标 ID（如 `openclaw/default`） |
+| `messages` | List\<Message\> | 对话消息列表 |
+| `stream` | Boolean | 是否启用 SSE 流式响应 |
+| `tools` | List\<Tool\> | 工具定义列表 |
+| `tool_choice` | Object | 工具选择策略（`"auto"`/`"none"`/`"required"` 等） |
+| `max_completion_tokens` | Integer | 最大输出 token 数 |
+| `temperature` | Double | 采样温度 (0.0–2.0) |
+| `top_p` | Double | 核采样概率 |
+| `frequency_penalty` | Double | 频率惩罚 (-2.0–2.0) |
+| `presence_penalty` | Double | 存在惩罚 (-2.0–2.0) |
+| `seed` | Integer | 随机种子 |
+| `stop` | Object | 停止序列（String 或 List\<String\>，最多 4 个） |
+| `user` | String | 用户标识，用于派生稳定会话 key |
+
+### HTTP 请求头（OpenClaw 特有）
+
+| 请求头 | 对应 Builder 方法 | 说明 |
+|--------|-----------------|------|
+| `x-openclaw-model` | `.xOpenclawModel(...)` | 覆盖 agent 的后端 provider/model |
+| `x-openclaw-session-key` | `.xOpenclawSessionKey(...)` | 显式会话路由 key |
+| `x-openclaw-message-channel` | `.xOpenclawMessageChannel(...)` | 综合通道上下文（如 `"slack"`） |
+| `x-openclaw-agent-id` | `.xOpenclawAgentId(...)` | 兼容性 agent-id 覆盖 |
+
+### ChatResponse 响应字段（OpenAI 兼容格式）
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | String | 响应唯一标识 |
+| `object` | String | 对象类型（`chat.completion` 或 `chat.completion.chunk`） |
+| `created` | Long | Unix 时间戳 |
+| `model` | String | 使用的模型 |
+| `choices[].index` | Integer | 选项索引 |
+| `choices[].message` | Message | 非流式：完整消息 |
+| `choices[].delta` | Message | 流式：增量更新 |
+| `choices[].finish_reason` | String | 结束原因（`stop`, `tool_calls` 等） |
+| `usage` | Usage | token 使用统计 |
 
 ## 相关文档
 
 - [OpenAI Chat Completions](https://docs.openclaw.ai/gateway/openai-http-api)
 - [OpenResponses API](https://docs.openclaw.ai/gateway/openresponses-http-api)
 - [Gateway Protocol](https://docs.openclaw.ai/gateway/protocol)
-- [CLI Backends](https://docs.openclaw.ai/gateway/cli-backends)
-- [CLI Reference](https://docs.openclaw.ai/cli)
 
 ## 依赖关系
 
