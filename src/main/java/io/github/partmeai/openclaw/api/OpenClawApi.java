@@ -373,8 +373,18 @@ public final class OpenClawApi {
 		public record Usage(
 				@JsonProperty("prompt_tokens") Integer promptTokens,
 				@JsonProperty("completion_tokens") Integer completionTokens,
-				@JsonProperty("total_tokens") Integer totalTokens
-		) {}
+				@JsonProperty("total_tokens") Integer totalTokens,
+				@JsonProperty("prompt_tokens_details") TokenDetails promptTokensDetails,
+				@JsonProperty("completion_tokens_details") TokenDetails completionTokensDetails
+		) {
+
+			@JsonInclude(Include.NON_NULL)
+			@JsonIgnoreProperties(ignoreUnknown = true)
+			public record TokenDetails(
+					@JsonProperty("cached_tokens") Integer cachedTokens,
+					@JsonProperty("reasoning_tokens") Integer reasoningTokens
+			) {}
+		}
 	}
 
 	// ========================================================================
@@ -394,7 +404,8 @@ public final class OpenClawApi {
 			@JsonProperty("id") String id,
 			@JsonProperty("object") String object,
 			@JsonProperty("created") Long created,
-			@JsonProperty("owned_by") String ownedBy
+			@JsonProperty("owned_by") String ownedBy,
+			@JsonProperty("permission") List<Object> permission
 	) {}
 
 	@JsonInclude(Include.NON_NULL)
@@ -403,7 +414,8 @@ public final class OpenClawApi {
 			@JsonProperty("id") String id,
 			@JsonProperty("object") String object,
 			@JsonProperty("created") Long created,
-			@JsonProperty("owned_by") String ownedBy
+			@JsonProperty("owned_by") String ownedBy,
+			@JsonProperty("permission") List<Object> permission
 	) {}
 
 	// ========================================================================
