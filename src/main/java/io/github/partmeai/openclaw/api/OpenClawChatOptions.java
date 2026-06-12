@@ -150,6 +150,16 @@ public class OpenClawChatOptions implements ToolCallingChatOptions, StructuredOu
 	@JsonIgnore
 	private String xOpenclawAgentId;
 
+	/**
+	 * Scope restriction for the request (honored in trusted-proxy/none auth modes).
+	 * Sent as the {@code x-openclaw-scopes} HTTP header.
+	 * <p>
+	 * In shared-secret modes (token/password), this header is ignored and the
+	 * full operator scope set is always used.
+	 */
+	@JsonIgnore
+	private String xOpenclawScopes;
+
 	// -----------------------------------------------------------------------
 	// Spring AI Tool Calling fields (managed by Spring AI, not sent to API)
 	// -----------------------------------------------------------------------
@@ -197,6 +207,7 @@ public class OpenClawChatOptions implements ToolCallingChatOptions, StructuredOu
 			.xOpenclawSessionKey(fromOptions.getXOpenclawSessionKey())
 			.xOpenclawMessageChannel(fromOptions.getXOpenclawMessageChannel())
 			.xOpenclawAgentId(fromOptions.getXOpenclawAgentId())
+			.xOpenclawScopes(fromOptions.getXOpenclawScopes())
 			.outputSchema(fromOptions.getOutputSchema())
 			.internalToolExecutionEnabled(fromOptions.getInternalToolExecutionEnabled())
 			.toolCallbacks(fromOptions.getToolCallbacks())
@@ -221,6 +232,9 @@ public class OpenClawChatOptions implements ToolCallingChatOptions, StructuredOu
 		}
 		if (xOpenclawAgentId != null && !xOpenclawAgentId.isEmpty()) {
 			headers.put("x-openclaw-agent-id", xOpenclawAgentId);
+		}
+		if (xOpenclawScopes != null && !xOpenclawScopes.isEmpty()) {
+			headers.put("x-openclaw-scopes", xOpenclawScopes);
 		}
 		return headers;
 	}
@@ -369,9 +383,10 @@ public class OpenClawChatOptions implements ToolCallingChatOptions, StructuredOu
 		return this.xOpenclawAgentId;
 	}
 
-	public void setXOpenclawAgentId(String xOpenclawAgentId) {
-		this.xOpenclawAgentId = xOpenclawAgentId;
-	}
+	public void setXOpenclawAgentId(String xOpenclawAgentId) { this.xOpenclawAgentId = xOpenclawAgentId; }
+
+	public String getXOpenclawScopes() { return this.xOpenclawScopes; }
+	public void setXOpenclawScopes(String xOpenclawScopes) { this.xOpenclawScopes = xOpenclawScopes; }
 
 	@Override
 	@Nullable
@@ -474,6 +489,7 @@ public class OpenClawChatOptions implements ToolCallingChatOptions, StructuredOu
 			&& Objects.equals(this.xOpenclawSessionKey, that.xOpenclawSessionKey)
 			&& Objects.equals(this.xOpenclawMessageChannel, that.xOpenclawMessageChannel)
 			&& Objects.equals(this.xOpenclawAgentId, that.xOpenclawAgentId)
+			&& Objects.equals(this.xOpenclawScopes, that.xOpenclawScopes)
 			&& Objects.equals(this.format, that.format)
 			&& Objects.equals(this.toolCallbacks, that.toolCallbacks)
 			&& Objects.equals(this.toolNames, that.toolNames)
@@ -487,6 +503,7 @@ public class OpenClawChatOptions implements ToolCallingChatOptions, StructuredOu
 			this.frequencyPenalty, this.presencePenalty, this.seed, this.stop,
 			this.maxTokens, this.user, this.xOpenclawModel, this.xOpenclawSessionKey,
 			this.xOpenclawMessageChannel, this.xOpenclawAgentId, this.format,
+			this.xOpenclawScopes,
 			this.toolCallbacks, this.toolNames, this.toolContext,
 			this.internalToolExecutionEnabled);
 	}
@@ -590,6 +607,8 @@ public class OpenClawChatOptions implements ToolCallingChatOptions, StructuredOu
 			this.options.xOpenclawAgentId = xOpenclawAgentId;
 			return this;
 		}
+
+		public Builder xOpenclawScopes(String xOpenclawScopes) { this.options.xOpenclawScopes = xOpenclawScopes; return this; }
 
 		public Builder outputSchema(String outputSchema) {
 			this.options.setOutputSchema(outputSchema);
