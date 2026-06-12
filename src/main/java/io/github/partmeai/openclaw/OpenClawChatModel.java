@@ -1,0 +1,642 @@
+/*
+ * Copyright 2023-present the original author or authors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      https://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package io.github.partmeai.openclaw;
+
+import java.time.Duration;
+import java.util.Base64;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+
+import com.fasterxml.jackson.core.type.TypeReference;
+import io.micrometer.observation.Observation;
+import io.micrometer.observation.ObservationRegistry;
+import io.micrometer.observation.contextpropagation.ObservationThreadLocalAccessor;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import reactor.core.publisher.Flux;
+import reactor.core.scheduler.Schedulers;
+
+import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.messages.MessageType;
+import org.springframework.ai.chat.messages.ToolResponseMessage;
+import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.chat.metadata.ChatGenerationMetadata;
+import org.springframework.ai.chat.metadata.ChatResponseMetadata;
+import org.springframework.ai.chat.metadata.DefaultUsage;
+import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.ai.chat.model.ChatResponse;
+import org.springframework.ai.chat.model.Generation;
+import org.springframework.ai.chat.model.MessageAggregator;
+import org.springframework.ai.chat.observation.ChatModelObservationContext;
+import org.springframework.ai.chat.observation.ChatModelObservationConvention;
+import org.springframework.ai.chat.observation.ChatModelObservationDocumentation;
+import org.springframework.ai.chat.observation.DefaultChatModelObservationConvention;
+import org.springframework.ai.chat.prompt.ChatOptions;
+import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.model.ModelOptionsUtils;
+import org.springframework.ai.model.tool.DefaultToolExecutionEligibilityPredicate;
+import org.springframework.ai.model.tool.ToolCallingChatOptions;
+import org.springframework.ai.model.tool.ToolCallingManager;
+import org.springframework.ai.model.tool.ToolExecutionEligibilityPredicate;
+import org.springframework.ai.model.tool.ToolExecutionResult;
+import org.springframework.ai.model.tool.internal.ToolCallReactiveContextHolder;
+import io.github.partmeai.openclaw.api.OpenClawApi;
+import io.github.partmeai.openclaw.api.OpenClawApi.ChatRequest;
+import io.github.partmeai.openclaw.api.OpenClawApi.Message.Role;
+import io.github.partmeai.openclaw.api.OpenClawApi.Message.ToolCall;
+import io.github.partmeai.openclaw.api.OpenClawApi.Message.ToolCallFunction;
+import io.github.partmeai.openclaw.api.OpenClawChatOptions;
+import io.github.partmeai.openclaw.api.OpenClawModel;
+import io.github.partmeai.openclaw.api.common.OpenClawApiConstants;
+import io.github.partmeai.openclaw.management.ModelManagementOptions;
+import io.github.partmeai.openclaw.management.OpenClawModelManager;
+import io.github.partmeai.openclaw.management.PullModelStrategy;
+import org.springframework.ai.retry.RetryUtils;
+import org.springframework.ai.tool.definition.ToolDefinition;
+import org.springframework.ai.util.json.JsonParser;
+import org.springframework.retry.support.RetryTemplate;
+import org.springframework.util.Assert;
+import org.springframework.util.CollectionUtils;
+import org.springframework.util.StringUtils;
+
+/**
+ * {@link ChatModel} implementation for OpenClaw Gateway.
+ * OpenClaw is an AI agent gateway that exposes OpenAI-compatible /v1/chat/completions
+ * and /v1/embeddings endpoints. It routes requests to configured agents with
+ * support for tool calling, streaming, and session management.
+ *
+ * @author Christian Tzolov
+ * @author luocongqiu
+ * @author Thomas Vitale
+ * @author Jihoon Kim
+ * @author Alexandros Pappas
+ * @author Ilayaperumal Gopinathan
+ * @author Sun Yuhan
+ * @since 1.0.0
+ *
+ * @see <a href="https://docs.openclaw.ai/gateway/openai-http-api">OpenClaw OpenAI HTTP API</a>
+ */
+public class OpenClawChatModel implements ChatModel {
+
+	private static final Logger logger = LoggerFactory.getLogger(OpenClawChatModel.class);
+
+	private static final String DONE = "done";
+
+	private static final String METADATA_PROMPT_EVAL_COUNT = "prompt-eval-count";
+
+	private static final String METADATA_EVAL_COUNT = "eval-count";
+
+	private static final String METADATA_CREATED_AT = "created-at";
+
+	private static final String METADATA_TOTAL_DURATION = "total-duration";
+
+	private static final String METADATA_LOAD_DURATION = "load-duration";
+
+	private static final String METADATA_PROMPT_EVAL_DURATION = "prompt-eval-duration";
+
+	private static final String METADATA_EVAL_DURATION = "eval-duration";
+
+	private static final ChatModelObservationConvention DEFAULT_OBSERVATION_CONVENTION = new DefaultChatModelObservationConvention();
+
+	private static final ToolCallingManager DEFAULT_TOOL_CALLING_MANAGER = ToolCallingManager.builder().build();
+
+	private final OpenClawApi chatApi;
+
+	private final OpenClawChatOptions defaultOptions;
+
+	private final ObservationRegistry observationRegistry;
+
+	private final OpenClawModelManager modelManager;
+
+	private final ToolCallingManager toolCallingManager;
+
+	/**
+	 * The tool execution eligibility predicate used to determine if a tool can be
+	 * executed.
+	 */
+	private final ToolExecutionEligibilityPredicate toolExecutionEligibilityPredicate;
+
+	private ChatModelObservationConvention observationConvention = DEFAULT_OBSERVATION_CONVENTION;
+
+	private final RetryTemplate retryTemplate;
+
+	public OpenClawChatModel(OpenClawApi openclawApi, OpenClawChatOptions defaultOptions, ToolCallingManager toolCallingManager,
+			ObservationRegistry observationRegistry, ModelManagementOptions modelManagementOptions) {
+		this(openclawApi, defaultOptions, toolCallingManager, observationRegistry, modelManagementOptions,
+				new DefaultToolExecutionEligibilityPredicate(), RetryUtils.DEFAULT_RETRY_TEMPLATE);
+	}
+
+	public OpenClawChatModel(OpenClawApi openclawApi, OpenClawChatOptions defaultOptions, ToolCallingManager toolCallingManager,
+			ObservationRegistry observationRegistry, ModelManagementOptions modelManagementOptions,
+			ToolExecutionEligibilityPredicate toolExecutionEligibilityPredicate, RetryTemplate retryTemplate) {
+
+		Assert.notNull(openclawApi, "openclawApi must not be null");
+		Assert.notNull(defaultOptions, "defaultOptions must not be null");
+		Assert.notNull(toolCallingManager, "toolCallingManager must not be null");
+		Assert.notNull(observationRegistry, "observationRegistry must not be null");
+		Assert.notNull(modelManagementOptions, "modelManagementOptions must not be null");
+		Assert.notNull(toolExecutionEligibilityPredicate, "toolExecutionEligibilityPredicate must not be null");
+		Assert.notNull(retryTemplate, "retryTemplate must not be null");
+		this.chatApi = openclawApi;
+		this.defaultOptions = defaultOptions;
+		this.toolCallingManager = toolCallingManager;
+		this.observationRegistry = observationRegistry;
+		this.modelManager = new OpenClawModelManager(this.chatApi, modelManagementOptions);
+		this.toolExecutionEligibilityPredicate = toolExecutionEligibilityPredicate;
+		this.retryTemplate = retryTemplate;
+		initializeModel(defaultOptions.getModel(), modelManagementOptions.pullModelStrategy());
+	}
+
+	public static Builder builder() {
+		return new Builder();
+	}
+
+	static ChatResponseMetadata from(OpenClawApi.ChatResponse response, ChatResponse previousChatResponse) {
+		Assert.notNull(response, "OpenClawApi.ChatResponse must not be null");
+
+		DefaultUsage newUsage = getDefaultUsage(response);
+		Integer promptTokens = newUsage.getPromptTokens();
+		Integer generationTokens = newUsage.getCompletionTokens();
+		int totalTokens = newUsage.getTotalTokens();
+
+		Duration evalDuration = response.getEvalDuration();
+		Duration promptEvalDuration = response.getPromptEvalDuration();
+		Duration loadDuration = response.getLoadDuration();
+		Duration totalDuration = response.getTotalDuration();
+
+		if (previousChatResponse != null && previousChatResponse.getMetadata() != null) {
+			Object metadataEvalDuration = previousChatResponse.getMetadata().get(METADATA_EVAL_DURATION);
+			if (metadataEvalDuration != null && evalDuration != null) {
+				evalDuration = evalDuration.plus((Duration) metadataEvalDuration);
+			}
+			Object metadataPromptEvalDuration = previousChatResponse.getMetadata().get(METADATA_PROMPT_EVAL_DURATION);
+			if (metadataPromptEvalDuration != null && promptEvalDuration != null) {
+				promptEvalDuration = promptEvalDuration.plus((Duration) metadataPromptEvalDuration);
+			}
+			Object metadataLoadDuration = previousChatResponse.getMetadata().get(METADATA_LOAD_DURATION);
+			if (metadataLoadDuration != null && loadDuration != null) {
+				loadDuration = loadDuration.plus((Duration) metadataLoadDuration);
+			}
+			Object metadataTotalDuration = previousChatResponse.getMetadata().get(METADATA_TOTAL_DURATION);
+			if (metadataTotalDuration != null && totalDuration != null) {
+				totalDuration = totalDuration.plus((Duration) metadataTotalDuration);
+			}
+			if (previousChatResponse.getMetadata().getUsage() != null) {
+				promptTokens += previousChatResponse.getMetadata().getUsage().getPromptTokens();
+				generationTokens += previousChatResponse.getMetadata().getUsage().getCompletionTokens();
+				totalTokens += previousChatResponse.getMetadata().getUsage().getTotalTokens();
+			}
+		}
+
+		DefaultUsage aggregatedUsage = new DefaultUsage(promptTokens, generationTokens, totalTokens);
+
+		return ChatResponseMetadata.builder()
+			.usage(aggregatedUsage)
+			.model(response.model())
+			.keyValue(METADATA_CREATED_AT, response.createdAt())
+			.keyValue(METADATA_EVAL_DURATION, evalDuration)
+			.keyValue(METADATA_EVAL_COUNT, aggregatedUsage.getCompletionTokens().intValue())
+			.keyValue(METADATA_LOAD_DURATION, loadDuration)
+			.keyValue(METADATA_PROMPT_EVAL_DURATION, promptEvalDuration)
+			.keyValue(METADATA_PROMPT_EVAL_COUNT, aggregatedUsage.getPromptTokens().intValue())
+			.keyValue(METADATA_TOTAL_DURATION, totalDuration)
+			.keyValue(DONE, response.done())
+			.build();
+	}
+
+	private static DefaultUsage getDefaultUsage(OpenClawApi.ChatResponse response) {
+		return new DefaultUsage(Optional.ofNullable(response.promptEvalCount()).orElse(0),
+				Optional.ofNullable(response.evalCount()).orElse(0));
+	}
+
+	@Override
+	public ChatResponse call(Prompt prompt) {
+		// Before moving any further, build the final request Prompt,
+		// merging runtime and default options.
+		Prompt requestPrompt = buildRequestPrompt(prompt);
+		return this.internalCall(requestPrompt, null);
+	}
+
+	private ChatResponse internalCall(Prompt prompt, ChatResponse previousChatResponse) {
+
+		OpenClawApi.ChatRequest request = openclawChatRequest(prompt, false);
+
+		ChatModelObservationContext observationContext = ChatModelObservationContext.builder()
+			.prompt(prompt)
+			.provider(OpenClawApiConstants.PROVIDER_NAME)
+			.build();
+
+		ChatResponse response = ChatModelObservationDocumentation.CHAT_MODEL_OPERATION
+			.observation(this.observationConvention, DEFAULT_OBSERVATION_CONVENTION, () -> observationContext,
+					this.observationRegistry)
+			.observe(() -> {
+
+				OpenClawApi.ChatResponse openclawResponse = this.retryTemplate.execute(ctx -> this.chatApi.chat(request));
+
+				List<AssistantMessage.ToolCall> toolCalls = openclawResponse.message().toolCalls() == null ? List.of()
+						: openclawResponse.message()
+							.toolCalls()
+							.stream()
+							.map(toolCall -> new AssistantMessage.ToolCall(toolCall.id(), "function",
+									toolCall.function().name(),
+									ModelOptionsUtils.toJsonString(toolCall.function().arguments())))
+							.toList();
+
+				var assistantMessage = AssistantMessage.builder()
+					.content(openclawResponse.message().content())
+					.properties(Map.of())
+					.toolCalls(toolCalls)
+					.build();
+
+				ChatGenerationMetadata generationMetadata = ChatGenerationMetadata.NULL;
+				if (openclawResponse.promptEvalCount() != null && openclawResponse.evalCount() != null) {
+					generationMetadata = ChatGenerationMetadata.builder()
+						.finishReason(openclawResponse.doneReason())
+						.metadata("thinking", openclawResponse.message().thinking())
+						.build();
+				}
+
+				var generator = new Generation(assistantMessage, generationMetadata);
+				ChatResponse chatResponse = new ChatResponse(List.of(generator),
+						from(openclawResponse, previousChatResponse));
+
+				observationContext.setResponse(chatResponse);
+
+				return chatResponse;
+
+			});
+
+		if (this.toolExecutionEligibilityPredicate.isToolExecutionRequired(prompt.getOptions(), response)) {
+			var toolExecutionResult = this.toolCallingManager.executeToolCalls(prompt, response);
+			if (toolExecutionResult.returnDirect()) {
+				// Return tool execution result directly to the client.
+				return ChatResponse.builder()
+					.from(response)
+					.generations(ToolExecutionResult.buildGenerations(toolExecutionResult))
+					.build();
+			}
+			else {
+				// Send the tool execution result back to the model.
+				return this.internalCall(new Prompt(toolExecutionResult.conversationHistory(), prompt.getOptions()),
+						response);
+			}
+		}
+
+		return response;
+	}
+
+	@Override
+	public Flux<ChatResponse> stream(Prompt prompt) {
+		// Before moving any further, build the final request Prompt,
+		// merging runtime and default options.
+		Prompt requestPrompt = buildRequestPrompt(prompt);
+		return this.internalStream(requestPrompt, null);
+	}
+
+	private Flux<ChatResponse> internalStream(Prompt prompt, ChatResponse previousChatResponse) {
+		return Flux.deferContextual(contextView -> {
+			OpenClawApi.ChatRequest request = openclawChatRequest(prompt, true);
+
+			final ChatModelObservationContext observationContext = ChatModelObservationContext.builder()
+				.prompt(prompt)
+				.provider(OpenClawApiConstants.PROVIDER_NAME)
+				.build();
+
+			Observation observation = ChatModelObservationDocumentation.CHAT_MODEL_OPERATION.observation(
+					this.observationConvention, DEFAULT_OBSERVATION_CONVENTION, () -> observationContext,
+					this.observationRegistry);
+
+			observation.parentObservation(contextView.getOrDefault(ObservationThreadLocalAccessor.KEY, null)).start();
+
+			Flux<OpenClawApi.ChatResponse> openclawResponse = this.chatApi.streamingChat(request);
+
+			Flux<ChatResponse> chatResponse = openclawResponse.map(chunk -> {
+				String content = (chunk.message() != null) ? chunk.message().content() : "";
+
+				List<AssistantMessage.ToolCall> toolCalls = List.of();
+
+				// Added null checks to prevent NPE when accessing tool calls
+				if (chunk.message() != null && chunk.message().toolCalls() != null) {
+					toolCalls = chunk.message()
+						.toolCalls()
+						.stream()
+						.map(toolCall -> new AssistantMessage.ToolCall(toolCall.id(), "function",
+								toolCall.function().name(),
+								ModelOptionsUtils.toJsonString(toolCall.function().arguments())))
+						.toList();
+				}
+
+				var assistantMessage = AssistantMessage.builder()
+					.content(content)
+					.properties(Map.of())
+					.toolCalls(toolCalls)
+					.build();
+
+				ChatGenerationMetadata generationMetadata = ChatGenerationMetadata.NULL;
+				if (chunk.promptEvalCount() != null && chunk.evalCount() != null) {
+					generationMetadata = ChatGenerationMetadata.builder().finishReason(chunk.doneReason()).build();
+				}
+
+				var generator = new Generation(assistantMessage, generationMetadata);
+				return new ChatResponse(List.of(generator), from(chunk, previousChatResponse));
+			});
+
+			// @formatter:off
+			Flux<ChatResponse> chatResponseFlux = chatResponse.flatMap(response -> {
+				if (this.toolExecutionEligibilityPredicate.isToolExecutionRequired(prompt.getOptions(), response)) {
+					// FIXME: bounded elastic needs to be used since tool calling
+					//  is currently only synchronous
+					return Flux.deferContextual(ctx -> {
+						ToolExecutionResult toolExecutionResult;
+						try {
+							ToolCallReactiveContextHolder.setContext(ctx);
+							toolExecutionResult = this.toolCallingManager.executeToolCalls(prompt, response);
+						}
+						finally {
+							ToolCallReactiveContextHolder.clearContext();
+						}
+						if (toolExecutionResult.returnDirect()) {
+							// Return tool execution result directly to the client.
+							return Flux.just(ChatResponse.builder().from(response)
+									.generations(ToolExecutionResult.buildGenerations(toolExecutionResult))
+									.build());
+						}
+						else {
+							// Send the tool execution result back to the model.
+							return this.internalStream(new Prompt(toolExecutionResult.conversationHistory(), prompt.getOptions()),
+									response);
+						}
+					}).subscribeOn(Schedulers.boundedElastic());
+				}
+				else {
+					return Flux.just(response);
+				}
+			})
+			.doOnError(observation::error)
+			.doFinally(s ->
+				observation.stop()
+			)
+			.contextWrite(ctx -> ctx.put(ObservationThreadLocalAccessor.KEY, observation));
+			// @formatter:on
+
+			return new MessageAggregator().aggregate(chatResponseFlux, observationContext::setResponse);
+		});
+	}
+
+	Prompt buildRequestPrompt(Prompt prompt) {
+		// Process runtime options
+		OpenClawChatOptions runtimeOptions = null;
+		if (prompt.getOptions() != null) {
+			if (prompt.getOptions() instanceof OpenClawChatOptions openclawChatOptions) {
+				runtimeOptions = ModelOptionsUtils.copyToTarget(OpenClawChatOptions.fromOptions(openclawChatOptions),
+						OpenClawChatOptions.class, OpenClawChatOptions.class);
+			}
+			else if (prompt.getOptions() instanceof ToolCallingChatOptions toolCallingChatOptions) {
+				runtimeOptions = ModelOptionsUtils.copyToTarget(toolCallingChatOptions, ToolCallingChatOptions.class,
+						OpenClawChatOptions.class);
+			}
+			else {
+				runtimeOptions = ModelOptionsUtils.copyToTarget(prompt.getOptions(), ChatOptions.class,
+						OpenClawChatOptions.class);
+			}
+		}
+
+		// Define request options by merging runtime options and default options
+		OpenClawChatOptions requestOptions = ModelOptionsUtils.merge(runtimeOptions, this.defaultOptions,
+				OpenClawChatOptions.class);
+		// Merge @JsonIgnore-annotated options explicitly since they are ignored by
+		// Jackson, used by ModelOptionsUtils.
+		if (runtimeOptions != null) {
+			requestOptions.setInternalToolExecutionEnabled(
+					ModelOptionsUtils.mergeOption(runtimeOptions.getInternalToolExecutionEnabled(),
+							this.defaultOptions.getInternalToolExecutionEnabled()));
+			requestOptions.setToolNames(ToolCallingChatOptions.mergeToolNames(runtimeOptions.getToolNames(),
+					this.defaultOptions.getToolNames()));
+			requestOptions.setToolCallbacks(ToolCallingChatOptions.mergeToolCallbacks(runtimeOptions.getToolCallbacks(),
+					this.defaultOptions.getToolCallbacks()));
+			requestOptions.setToolContext(ToolCallingChatOptions.mergeToolContext(runtimeOptions.getToolContext(),
+					this.defaultOptions.getToolContext()));
+		}
+		else {
+			requestOptions.setInternalToolExecutionEnabled(this.defaultOptions.getInternalToolExecutionEnabled());
+			requestOptions.setToolNames(this.defaultOptions.getToolNames());
+			requestOptions.setToolCallbacks(this.defaultOptions.getToolCallbacks());
+			requestOptions.setToolContext(this.defaultOptions.getToolContext());
+		}
+
+		// Validate request options
+		if (!StringUtils.hasText(requestOptions.getModel())) {
+			throw new IllegalArgumentException("model cannot be null or empty");
+		}
+
+		ToolCallingChatOptions.validateToolCallbacks(requestOptions.getToolCallbacks());
+
+		return new Prompt(prompt.getInstructions(), requestOptions);
+	}
+
+	/**
+	 * Package access for testing.
+	 */
+	OpenClawApi.ChatRequest openclawChatRequest(Prompt prompt, boolean stream) {
+
+		List<OpenClawApi.Message> openclawMessages = prompt.getInstructions().stream().map(message -> {
+			if (message.getMessageType() == MessageType.SYSTEM) {
+				return List.of(OpenClawApi.Message.builder(Role.SYSTEM).content(message.getText()).build());
+			}
+			else if (message.getMessageType() == MessageType.USER) {
+				var messageBuilder = OpenClawApi.Message.builder(Role.USER).content(message.getText());
+				if (message instanceof UserMessage userMessage) {
+					if (!CollectionUtils.isEmpty(userMessage.getMedia())) {
+						messageBuilder.images(userMessage.getMedia()
+							.stream()
+							.map(media -> this.fromMediaData(media.getData()))
+							.toList());
+					}
+				}
+
+				return List.of(messageBuilder.build());
+			}
+			else if (message.getMessageType() == MessageType.ASSISTANT) {
+				var assistantMessage = (AssistantMessage) message;
+				List<ToolCall> toolCalls = null;
+				if (!CollectionUtils.isEmpty(assistantMessage.getToolCalls())) {
+					toolCalls = assistantMessage.getToolCalls().stream().map(toolCall -> {
+						var function = new ToolCallFunction(toolCall.name(),
+								JsonParser.fromJson(toolCall.arguments(), new TypeReference<>() {
+								}));
+						return new ToolCall(toolCall.id(), function);
+					}).toList();
+				}
+				return List.of(OpenClawApi.Message.builder(Role.ASSISTANT)
+					.content(assistantMessage.getText())
+					.toolCalls(toolCalls)
+					.build());
+			}
+			else if (message.getMessageType() == MessageType.TOOL) {
+				ToolResponseMessage toolMessage = (ToolResponseMessage) message;
+				return toolMessage.getResponses()
+					.stream()
+					.map(tr -> OpenClawApi.Message.builder(Role.TOOL).content(tr.responseData()).build())
+					.toList();
+			}
+			throw new IllegalArgumentException("Unsupported message type: " + message.getMessageType());
+		}).flatMap(List::stream).toList();
+
+		OpenClawChatOptions requestOptions = null;
+		if (prompt.getOptions() instanceof OpenClawChatOptions) {
+			requestOptions = (OpenClawChatOptions) prompt.getOptions();
+		}
+		else {
+			requestOptions = OpenClawChatOptions.fromOptions((OpenClawChatOptions) prompt.getOptions());
+		}
+
+		OpenClawApi.ChatRequest.Builder requestBuilder = OpenClawApi.ChatRequest.builder(requestOptions.getModel())
+			.stream(stream)
+			.messages(openclawMessages)
+			.options(requestOptions)
+			.think(requestOptions.getThinkOption());
+
+		if (requestOptions.getFormat() != null) {
+			requestBuilder.format(requestOptions.getFormat());
+		}
+
+		if (requestOptions.getKeepAlive() != null) {
+			requestBuilder.keepAlive(requestOptions.getKeepAlive());
+		}
+
+		List<ToolDefinition> toolDefinitions = this.toolCallingManager.resolveToolDefinitions(requestOptions);
+		if (!CollectionUtils.isEmpty(toolDefinitions)) {
+			requestBuilder.tools(this.getTools(toolDefinitions));
+		}
+
+		return requestBuilder.build();
+	}
+
+	private String fromMediaData(Object mediaData) {
+		if (mediaData instanceof byte[] bytes) {
+			return Base64.getEncoder().encodeToString(bytes);
+		}
+		else if (mediaData instanceof String text) {
+			return text;
+		}
+		else {
+			throw new IllegalArgumentException("Unsupported media data type: " + mediaData.getClass().getSimpleName());
+		}
+
+	}
+
+	private List<ChatRequest.Tool> getTools(List<ToolDefinition> toolDefinitions) {
+		return toolDefinitions.stream().map(toolDefinition -> {
+			var tool = new ChatRequest.Tool.Function(toolDefinition.name(), toolDefinition.description(),
+					toolDefinition.inputSchema());
+			return new ChatRequest.Tool(tool);
+		}).toList();
+	}
+
+	@Override
+	public ChatOptions getDefaultOptions() {
+		return OpenClawChatOptions.fromOptions(this.defaultOptions);
+	}
+
+	/**
+	 * Pull the given model. (No-op: OpenClaw manages models server-side.)
+	 */
+	private void initializeModel(String model, PullModelStrategy pullModelStrategy) {
+		if (pullModelStrategy != null && !PullModelStrategy.NEVER.equals(pullModelStrategy)) {
+			this.modelManager.pullModel(model, pullModelStrategy);
+		}
+	}
+
+	/**
+	 * Use the provided convention for reporting observation data
+	 * @param observationConvention The provided convention
+	 */
+	public void setObservationConvention(ChatModelObservationConvention observationConvention) {
+		Assert.notNull(observationConvention, "observationConvention cannot be null");
+		this.observationConvention = observationConvention;
+	}
+
+	public static final class Builder {
+
+		private OpenClawApi openclawApi;
+
+		private OpenClawChatOptions defaultOptions = OpenClawChatOptions.builder().model(OpenClawModel.DEFAULT.id()).build();
+
+		private ToolCallingManager toolCallingManager;
+
+		private ToolExecutionEligibilityPredicate toolExecutionEligibilityPredicate = new DefaultToolExecutionEligibilityPredicate();
+
+		private ObservationRegistry observationRegistry = ObservationRegistry.NOOP;
+
+		private ModelManagementOptions modelManagementOptions = ModelManagementOptions.defaults();
+
+		private RetryTemplate retryTemplate = RetryUtils.DEFAULT_RETRY_TEMPLATE;
+
+		private Builder() {
+		}
+
+		public Builder openclawApi(OpenClawApi openclawApi) {
+			this.openclawApi = openclawApi;
+			return this;
+		}
+
+		public Builder defaultOptions(OpenClawChatOptions defaultOptions) {
+			this.defaultOptions = defaultOptions;
+			return this;
+		}
+
+		public Builder toolCallingManager(ToolCallingManager toolCallingManager) {
+			this.toolCallingManager = toolCallingManager;
+			return this;
+		}
+
+		public Builder toolExecutionEligibilityPredicate(
+				ToolExecutionEligibilityPredicate toolExecutionEligibilityPredicate) {
+			this.toolExecutionEligibilityPredicate = toolExecutionEligibilityPredicate;
+			return this;
+		}
+
+		public Builder observationRegistry(ObservationRegistry observationRegistry) {
+			this.observationRegistry = observationRegistry;
+			return this;
+		}
+
+		public Builder modelManagementOptions(ModelManagementOptions modelManagementOptions) {
+			this.modelManagementOptions = modelManagementOptions;
+			return this;
+		}
+
+		public Builder retryTemplate(RetryTemplate retryTemplate) {
+			this.retryTemplate = retryTemplate;
+			return this;
+		}
+
+		public OpenClawChatModel build() {
+			if (this.toolCallingManager != null) {
+				return new OpenClawChatModel(this.openclawApi, this.defaultOptions, this.toolCallingManager,
+						this.observationRegistry, this.modelManagementOptions, this.toolExecutionEligibilityPredicate,
+						this.retryTemplate);
+			}
+			return new OpenClawChatModel(this.openclawApi, this.defaultOptions, DEFAULT_TOOL_CALLING_MANAGER,
+					this.observationRegistry, this.modelManagementOptions, this.toolExecutionEligibilityPredicate,
+					this.retryTemplate);
+		}
+
+	}
+
+}
