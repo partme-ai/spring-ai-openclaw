@@ -2,7 +2,7 @@
 
 Spring AI 模型集成：将 OpenClaw Gateway 桥接到 Spring AI 的 `ChatModel` 和 `EmbeddingModel` 接口。
 
-基于 `openclaw-java-sdk`，通过 OpenClaw Gateway 的 OpenAI 兼容端点实现：
+通过 OpenClaw Gateway 的 OpenAI 兼容端点实现：
 
 - `POST /v1/chat/completions` → `ChatModel`（流式 + 非流式）
 - `POST /v1/embeddings` → `EmbeddingModel`
@@ -136,5 +136,4 @@ OpenClawChatOptions options = OpenClawChatOptions.builder()
 
 - Spring Boot 3.4+
 - Spring AI 1.0.0+
-- openclaw-java-sdk 2.7.x
 - JDK 17+
