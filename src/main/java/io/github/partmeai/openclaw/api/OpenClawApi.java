@@ -39,8 +39,8 @@ import org.springframework.web.reactive.function.client.WebClient;
 /**
  * Java Client for the OpenClaw Gateway OpenAI-compatible HTTP API.
  * <p>
- * Calls {@code /v1/chat/completions}, {@code /v1/models}, {@code /v1/embeddings},
- * and {@code /v1/responses} as described in the Gateway documentation.
+ * Calls {@code /v1/chat/completions}, {@code /v1/models}, {@code /v1/embeddings}
+ * as described in the Gateway documentation.
  * <p>
  * The {@code model} field uses OpenClaw agent-target routing:
  * {@code openclaw/default}, {@code openclaw/<agentId>}.
