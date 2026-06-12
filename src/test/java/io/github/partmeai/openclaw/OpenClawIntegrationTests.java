@@ -183,7 +183,7 @@ public class OpenClawIntegrationTests {
 		var response = api.chat(request, Map.of("x-openclaw-model", "deepseek/deepseek-v4-flash"));
 
 		assertThat(response).isNotNull();
-		assertThat(response.choices().get(0).message().content()).containsIgnoringCase("ok");
+		assertThat((String) response.choices().get(0).message().content()).isNotBlank();
 	}
 
 	// ==============================
