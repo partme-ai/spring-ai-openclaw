@@ -24,8 +24,7 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonInclude.Include;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import io.github.partmeai.openclaw.api.common.OpenClawApiConstants;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import lombok.extern.slf4j.Slf4j;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
@@ -50,6 +49,7 @@ import org.springframework.web.reactive.function.client.WebClient;
  * @author Loong Wan
  * @see <a href="https://docs.openclaw.ai/gateway/openai-http-api">OpenClaw OpenAI HTTP API</a>
  */
+@Slf4j
 public final class OpenClawApi {
 
 	public static Builder builder() {
@@ -57,8 +57,6 @@ public final class OpenClawApi {
 	}
 
 	public static final String REQUEST_BODY_NULL_ERROR = "The request body can not be null.";
-
-	private static final Logger logger = LoggerFactory.getLogger(OpenClawApi.class);
 
 	private final RestClient restClient;
 
@@ -131,8 +129,8 @@ public final class OpenClawApi {
 				.bodyToFlux(ChatResponse.class)
 				.onErrorResume(sseErrorHandler::handle)
 				.handle((chunk, sink) -> {
-					if (logger.isTraceEnabled()) {
-						logger.trace("SSE chunk: {}", chunk);
+					if (log.isTraceEnabled()) {
+						log.trace("SSE chunk: {}", chunk);
 					}
 					if (chunk.choices() != null && !chunk.choices().isEmpty()) {
 						sink.next(chunk);

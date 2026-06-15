@@ -22,8 +22,7 @@ import java.util.Map;
 import io.github.partmeai.openclaw.api.OpenClawApi;
 import io.github.partmeai.openclaw.api.OpenClawChatOptions;
 import io.github.partmeai.openclaw.api.OpenClawModel;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import lombok.extern.slf4j.Slf4j;
 
 import org.springframework.ai.document.Document;
 import org.springframework.ai.embedding.Embedding;
@@ -47,9 +46,8 @@ import org.springframework.util.Assert;
  * @author Loong Wan
  * @see <a href="https://docs.openclaw.ai/gateway/openai-http-api">OpenClaw OpenAI HTTP API</a>
  */
+@Slf4j
 public class OpenClawEmbeddingModel implements EmbeddingModel {
-
-	private static final Logger logger = LoggerFactory.getLogger(OpenClawEmbeddingModel.class);
 
 	private final OpenClawApi api;
 
