@@ -16,9 +16,9 @@ Spring AI 模型集成：将 OpenClaw Gateway 桥接到 Spring AI 的 `ChatModel
 
 ```xml
 <dependency>
-    <groupId>io.github.hiwepy</groupId>
+    <groupId>io.github.partmeai</groupId>
     <artifactId>spring-ai-openclaw</artifactId>
-    <version>2.7.x.20260527-SNAPSHOT</version>
+    <version>3.5.x.20260527-SNAPSHOT</version>
 </dependency>
 ```
 
