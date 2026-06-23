@@ -29,8 +29,10 @@ import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonInclude.Include;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import io.github.partmeai.openclaw.api.common.OpenClawApiConstants;
 import lombok.Getter;
 
+import lombok.Setter;
 import org.springframework.ai.model.ModelOptionsUtils;
 import org.springframework.ai.model.tool.StructuredOutputChatOptions;
 import org.springframework.ai.model.tool.ToolCallingChatOptions;
@@ -60,53 +62,70 @@ public class OpenClawChatOptions implements ToolCallingChatOptions, StructuredOu
 	/**
 	 * OpenClaw agent target id, e.g. "openclaw/default" or "openclaw/research".
 	 */
-	@JsonProperty("model")
+	@Setter
+    @JsonProperty("model")
 	private String model;
 
 	/**
 	 * Sampling temperature (0.0–2.0).
 	 */
-	@JsonProperty("temperature")
+	@Setter
+    @JsonProperty("temperature")
 	private Double temperature;
 
 	/**
 	 * Nucleus sampling probability.
 	 */
-	@JsonProperty("top_p")
+	@Setter
+    @JsonProperty("top_p")
 	private Double topP;
 
 	/**
 	 * Top-k sampling. Not forwarded to the API (OpenClaw doesn't expose top_k).
 	 */
-	@JsonIgnore
+	@Setter
+    @JsonIgnore
 	private Integer topK;
 
 	/**
 	 * Frequency penalty (-2.0 to 2.0).
 	 */
-	@JsonProperty("frequency_penalty")
+	@Setter
+    @JsonProperty("frequency_penalty")
 	private Double frequencyPenalty;
 
 	/**
 	 * Presence penalty (-2.0 to 2.0).
 	 */
-	@JsonProperty("presence_penalty")
+	@Setter
+    @JsonProperty("presence_penalty")
 	private Double presencePenalty;
 
 	/**
 	 * Integer seed for reproducible output.
 	 */
-	@JsonProperty("seed")
+	@Setter
+    @JsonProperty("seed")
 	private Integer seed;
 
 	/**
 	 * Stop sequences (string or array of up to 4 strings).
 	 */
-	@JsonProperty("stop")
+	@Setter
+    @JsonProperty("stop")
 	private List<String> stop;
 
 	/**
 	 * Maximum completion tokens (maps to max_completion_tokens in the API).
+	 * This is the preferred field; max_tokens is the legacy alias.
+	 * When both are set, max_completion_tokens takes precedence.
+	 */
+	@JsonProperty("max_completion_tokens")
+	private Integer maxCompletionTokens;
+
+	/**
+	 * Maximum tokens (legacy alias for max_completion_tokens).
+	 * When both are set, max_completion_tokens takes precedence.
 	 */
 	@JsonProperty("max_tokens")
 	private Integer maxTokens;
@@ -115,7 +134,8 @@ public class OpenClawChatOptions implements ToolCallingChatOptions, StructuredOu
 	 * An OpenAI user identifier for stable session routing.
 	 * OpenClaw derives a stable session key from this value.
 	 */
-	@JsonProperty("user")
+	@Setter
+    @JsonProperty("user")
 	private String user;
 
 	// -----------------------------------------------------------------------
@@ -134,7 +154,8 @@ public class OpenClawChatOptions implements ToolCallingChatOptions, StructuredOu
 	 * Explicit session routing key.
 	 * Sent as the {@code x-openclaw-session-key} HTTP header.
 	 */
-	@JsonIgnore
+	@Setter
+    @JsonIgnore
 	private String xOpenclawSessionKey;
 
 	/**
@@ -203,6 +224,7 @@ public class OpenClawChatOptions implements ToolCallingChatOptions, StructuredOu
 			.presencePenalty(fromOptions.getPresencePenalty())
 			.seed(fromOptions.getSeed())
 			.stop(fromOptions.getStop())
+			.maxCompletionTokens(fromOptions.getMaxCompletionTokens())
 			.maxTokens(fromOptions.getMaxTokens())
 			.user(fromOptions.getUser())
 			.xOpenclawModel(fromOptions.getXOpenclawModel())
@@ -224,19 +246,19 @@ public class OpenClawChatOptions implements ToolCallingChatOptions, StructuredOu
 	public Map<String, String> toHttpHeaders() {
 		Map<String, String> headers = new HashMap<>();
 		if (xOpenclawModel != null && !xOpenclawModel.isEmpty()) {
-			headers.put("x-openclaw-model", xOpenclawModel);
+			headers.put(OpenClawApiConstants.HEADER_X_OPENCLAW_MODEL, xOpenclawModel);
 		}
 		if (xOpenclawSessionKey != null && !xOpenclawSessionKey.isEmpty()) {
-			headers.put("x-openclaw-session-key", xOpenclawSessionKey);
+			headers.put(OpenClawApiConstants.HEADER_X_OPENCLAW_SESSION_KEY, xOpenclawSessionKey);
 		}
 		if (xOpenclawMessageChannel != null && !xOpenclawMessageChannel.isEmpty()) {
-			headers.put("x-openclaw-message-channel", xOpenclawMessageChannel);
+			headers.put(OpenClawApiConstants.HEADER_X_OPENCLAW_MESSAGE_CHANNEL, xOpenclawMessageChannel);
 		}
 		if (xOpenclawAgentId != null && !xOpenclawAgentId.isEmpty()) {
-			headers.put("x-openclaw-agent-id", xOpenclawAgentId);
+			headers.put(OpenClawApiConstants.HEADER_X_OPENCLAW_AGENT_ID, xOpenclawAgentId);
 		}
 		if (xOpenclawScopes != null && !xOpenclawScopes.isEmpty()) {
-			headers.put("x-openclaw-scopes", xOpenclawScopes);
+			headers.put(OpenClawApiConstants.HEADER_X_OPENCLAW_SCOPES, xOpenclawScopes);
 		}
 		return headers;
 	}
@@ -281,41 +303,18 @@ public class OpenClawChatOptions implements ToolCallingChatOptions, StructuredOu
 	// Setters (hand-written to preserve validation logic)
 	// -----------------------------------------------------------------------
 
-	public void setModel(String model) {
-		this.model = model;
-	}
-
-	public void setTemperature(Double temperature) {
-		this.temperature = temperature;
-	}
-
-	public void setTopP(Double topP) {
-		this.topP = topP;
-	}
-
-	public void setTopK(Integer topK) {
-		this.topK = topK;
-	}
-
-	public void setFrequencyPenalty(Double frequencyPenalty) {
-		this.frequencyPenalty = frequencyPenalty;
-	}
-
-	public void setPresencePenalty(Double presencePenalty) {
-		this.presencePenalty = presencePenalty;
-	}
-
-	public void setSeed(Integer seed) {
-		this.seed = seed;
-	}
-
-	@JsonIgnore
+    @JsonIgnore
 	public void setStopSequences(List<String> stopSequences) {
 		setStop(stopSequences);
 	}
 
-	public void setStop(List<String> stop) {
-		this.stop = stop;
+    /**
+	 * Set max_completion_tokens (preferred) or max_tokens (legacy).
+	 * @see #setMaxTokens(Integer)
+	 */
+	@JsonIgnore
+	public void setMaxCompletionTokens(Integer maxCompletionTokens) {
+		this.maxCompletionTokens = maxCompletionTokens;
 	}
 
 	@JsonIgnore
@@ -323,19 +322,11 @@ public class OpenClawChatOptions implements ToolCallingChatOptions, StructuredOu
 		this.maxTokens = maxTokens;
 	}
 
-	public void setUser(String user) {
-		this.user = user;
-	}
-
-	public void setXOpenclawModel(String xOpenclawModel) {
+    public void setXOpenclawModel(String xOpenclawModel) {
 		this.xOpenclawModel = xOpenclawModel;
 	}
 
-	public void setXOpenclawSessionKey(String xOpenclawSessionKey) {
-		this.xOpenclawSessionKey = xOpenclawSessionKey;
-	}
-
-	public void setXOpenclawMessageChannel(String xOpenclawMessageChannel) {
+    public void setXOpenclawMessageChannel(String xOpenclawMessageChannel) {
 		this.xOpenclawMessageChannel = xOpenclawMessageChannel;
 	}
 
@@ -404,6 +395,7 @@ public class OpenClawChatOptions implements ToolCallingChatOptions, StructuredOu
 			&& Objects.equals(this.presencePenalty, that.presencePenalty)
 			&& Objects.equals(this.seed, that.seed)
 			&& Objects.equals(this.stop, that.stop)
+			&& Objects.equals(this.maxCompletionTokens, that.maxCompletionTokens)
 			&& Objects.equals(this.maxTokens, that.maxTokens)
 			&& Objects.equals(this.user, that.user)
 			&& Objects.equals(this.xOpenclawModel, that.xOpenclawModel)
@@ -422,7 +414,8 @@ public class OpenClawChatOptions implements ToolCallingChatOptions, StructuredOu
 	public int hashCode() {
 		return Objects.hash(this.model, this.temperature, this.topP, this.topK,
 			this.frequencyPenalty, this.presencePenalty, this.seed, this.stop,
-			this.maxTokens, this.user, this.xOpenclawModel, this.xOpenclawSessionKey,
+			this.maxCompletionTokens, this.maxTokens,
+			this.user, this.xOpenclawModel, this.xOpenclawSessionKey,
 			this.xOpenclawMessageChannel, this.xOpenclawAgentId, this.format,
 			this.xOpenclawScopes,
 			this.toolCallbacks, this.toolNames, this.toolContext,
@@ -479,6 +472,15 @@ public class OpenClawChatOptions implements ToolCallingChatOptions, StructuredOu
 
 		public Builder stop(List<String> stop) {
 			this.options.stop = stop;
+			return this;
+		}
+
+		/**
+		 * Set max_completion_tokens (preferred) or max_tokens (legacy).
+		 * When both are set, max_completion_tokens takes precedence.
+		 */
+		public Builder maxCompletionTokens(Integer maxCompletionTokens) {
+			this.options.maxCompletionTokens = maxCompletionTokens;
 			return this;
 		}
 

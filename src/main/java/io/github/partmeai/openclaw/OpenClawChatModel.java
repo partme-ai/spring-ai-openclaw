@@ -476,8 +476,12 @@ public class OpenClawChatModel implements ChatModel {
 			.presencePenalty(requestOptions.getPresencePenalty())
 			.seed(requestOptions.getSeed());
 
-		if (requestOptions.getMaxTokens() != null) {
-			requestBuilder.maxCompletionTokens(requestOptions.getMaxTokens());
+		// max_completion_tokens takes precedence over max_tokens
+		if (requestOptions.getMaxCompletionTokens() != null) {
+			requestBuilder.maxCompletionTokens(requestOptions.getMaxCompletionTokens());
+		}
+		else if (requestOptions.getMaxTokens() != null) {
+			requestBuilder.maxTokens(requestOptions.getMaxTokens());
 		}
 
 		if (requestOptions.getStop() != null && !requestOptions.getStop().isEmpty()) {

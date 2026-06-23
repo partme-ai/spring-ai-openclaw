@@ -216,10 +216,17 @@ public final class OpenClawApi {
 			@JsonProperty("stream_options") StreamOptions streamOptions
 	) {
 
+		/**
+		 * Builder for ChatRequest.
+		 */
 		public static Builder builder(String model) {
 			return new Builder(model);
 		}
 
+		/**
+		 * Stream options for controlling SSE behavior.
+		 * @see <a href="https://docs.openclaw.ai/gateway/openai-http-api#streaming-sse">Streaming SSE</a>
+		 */
 		@JsonInclude(Include.NON_NULL)
 		public record StreamOptions(@JsonProperty("include_usage") Boolean includeUsage) {}
 
@@ -271,6 +278,11 @@ public final class OpenClawApi {
 			public Builder stream(boolean stream) { this.stream = stream; return this; }
 			public Builder tools(List<Tool> tools) { this.tools = tools; return this; }
 			public Builder toolChoice(Object toolChoice) { this.toolChoice = toolChoice; return this; }
+
+			/**
+			 * Set max_completion_tokens (preferred) or max_tokens (legacy).
+			 * When both are set, max_completion_tokens takes precedence.
+			 */
 			public Builder maxCompletionTokens(Integer v) { this.maxCompletionTokens = v; return this; }
 			public Builder maxTokens(Integer v) { this.maxTokens = v; return this; }
 			public Builder temperature(Double v) { this.temperature = v; return this; }
