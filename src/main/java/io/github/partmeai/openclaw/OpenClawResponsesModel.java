@@ -22,7 +22,9 @@ import java.util.Map;
 import java.util.Optional;
 
 import io.github.partmeai.openclaw.api.OpenClawApi;
-import io.github.partmeai.openclaw.api.OpenClawApi.Tool;
+import io.github.partmeai.openclaw.api.OpenClawApi.ChatRequest.Tool;
+import io.github.partmeai.openclaw.api.OpenClawChatOptions;
+import io.github.partmeai.openclaw.api.OpenClawModel;
 import io.github.partmeai.openclaw.api.OpenClawResponsesApi;
 import io.github.partmeai.openclaw.api.OpenClawResponsesApi.FunctionCall;
 import io.github.partmeai.openclaw.api.OpenClawResponsesApi.InputItems;

@@ -18,13 +18,14 @@ package io.github.partmeai.openclaw.api;
 
 import java.util.List;
 import java.util.Map;
+import java.util.function.Function;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonInclude.Include;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
-import io.github.partmeai.openclaw.api.OpenClawApi.Tool;
+import io.github.partmeai.openclaw.api.OpenClawApi.ChatRequest.Tool;
 
 import lombok.extern.slf4j.Slf4j;
 import reactor.core.publisher.Flux;
@@ -83,7 +84,7 @@ public final class OpenClawResponsesApi {
 				.baseUrl(baseUrl)
 				.defaultHeaders(headers -> {
 					headers.setContentType(MediaType.APPLICATION_JSON);
-					headers.setAccept(MediaType.TEXT_EVENT_STREAM);
+					headers.setAccept(List.of(MediaType.TEXT_EVENT_STREAM));
 				})
 				.build();
 
@@ -137,11 +138,20 @@ public final class OpenClawResponsesApi {
 				.accept(MediaType.TEXT_EVENT_STREAM);
 		extraHeaders.forEach(requestSpec::header);
 
+		Function<Throwable, Flux<ResponseEvent>> errorHandler = cause -> {
+			String msg = cause.getMessage();
+			// Suppress [DONE] sentinel errors
+			if (msg != null && msg.contains("START_ARRAY") && msg.contains("ResponseEvent")) {
+				return Flux.empty();
+			}
+			return Flux.error(cause);
+		};
+
 		return requestSpec
 				.body(Mono.just(request), ResponseRequest.class)
 				.retrieve()
 				.bodyToFlux(ResponseEvent.class)
-				.onErrorResume(sseErrorHandler::handle)
+				.onErrorResume(errorHandler)
 				.handle((event, sink) -> {
 					if (log.isTraceEnabled()) {
 						log.trace("SSE event: {}", event);
