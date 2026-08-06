@@ -1,198 +1,168 @@
+<a id="readme-top"></a>
+
+<div align="center">
+
 # spring-ai-openclaw
 
-Spring AI 模型集成：将 OpenClaw Gateway 桥接到 Spring AI 的 `ChatModel` 和 `EmbeddingModel` 接口。
+**Spring Boot Starter for spring-ai-openclaw**
 
-通过 OpenClaw Gateway 的 OpenAI 兼容端点实现：
+[![Maven Central](https://img.shields.io/maven-central/v/io.github.easy4j/spring-ai-openclaw)](https://github.com/easy-4-java/spring-ai-openclaw)
+[![Java](https://img.shields.io/badge/Java-17-orange)](#3-requirements-and-compatibility)
+[![License](https://img.shields.io/badge/license-Apache-2.0-green)](https://www.apache.org/licenses/LICENSE-2.0)
 
-- `POST /v1/chat/completions` → `ChatModel`（流式 + 非流式）
-- `POST /v1/embeddings` → `EmbeddingModel`
-- `GET /v1/models` → 模型列表
-- `GET /v1/models/{id}` → 单个模型信息
-- `POST /v1/responses` → OpenAI Responses API
+[简体中文](./README.zh-CN.md) | [English](./README.md)
 
-## 快速开始
+[Positioning](#1-positioning) · [Capabilities](#2-core-capabilities) ·
+[Dependency](#5-dependency) · [Quick Start](#6-quick-start) ·
+[Configuration](#7-configuration-reference) · [Versions](#9-version-lines-and-compatibility) ·
+[Build](#10-build-and-test) · [License](#12-license)
 
-### 1. 添加依赖
+</div>
+
+---
+
+> **Current Version**：`3.5.x.20260527-SNAPSHOT`<br>
+> **JDK Baseline**：`17`<br>
+> **Group ID**：`io.github.easy4j`<br>
+> **Artifact ID**：`spring-ai-openclaw`<br>
+> **License**：Apache License 2.0<br>
+
+## 1. Positioning
+
+**spring-ai-openclaw** is a Spring Boot starter that integrates **spring-ai-openclaw** for applications using spring-ai-openclaw. It provides auto-configuration, property binding, and ready-to-use beans so that applications can consume spring-ai-openclaw capabilities with minimal setup.
+
+| Dimension | Description |
+|---|---|
+| Type | Spring Boot Starter |
+| Consumers | Spring Boot applications using spring-ai-openclaw |
+| Core Capabilities | auto-configuration, property binding, ready-to-use beans for spring-ai-openclaw |
+| JDK | `17` |
+| Coordinates | `io.github.easy4j:spring-ai-openclaw:3.5.x.20260527-SNAPSHOT` |
+| Config Prefix | `spring.ai.openclaw` |
+
+## 2. Core Capabilities
+
+| Capability | Status | Description |
+|---|:---:|---|
+| Auto-configuration | ✅ Stable | Registers spring-ai-openclaw beans automatically |
+| Property Binding | ✅ Stable | Binds `spring.ai.openclaw.*` to `Properties` |
+| Ready-to-use beans | ✅ Stable | Auto-registered via auto-configuration |
+
+## 3. Requirements and Compatibility
+
+| Dependency | Minimum | Evidence |
+|---|---:|---|
+| JDK | `17` | `pom.xml` |
+| Spring Boot | `3.x` | `pom.xml` parent |
+| Maven | `3.6+` | Maven Enforcer |
+
+## 4. Auto-configuration
+
+The starter auto-configures the following beans:
+
+| Bean | Condition | Missing Behavior |
+|---|---|---|
+| `Object` | classpath + property | not created |
+
+Auto-configuration registration:
+
+- `META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports` (Spring Boot 2.7+ / 3.x / 4.x)
+- `META-INF/spring.factories` (Spring Boot 2.x legacy)
+
+## 5. Dependency
 
 ```xml
 <dependency>
-    <groupId>io.github.partmeai</groupId>
+    <groupId>io.github.easy4j</groupId>
     <artifactId>spring-ai-openclaw</artifactId>
     <version>3.5.x.20260527-SNAPSHOT</version>
 </dependency>
 ```
 
-### 2. 配置
+No additional easy4j component dependencies.
+
+## 6. Quick Start
+
+### 6.1 Add dependency
+
+Add the dependency above to your `pom.xml`.
+
+### 6.2 Configure
 
 ```yaml
-spring:
-  ai:
-    openclaw:
-      base-url: http://localhost:18789
-      gateway-auth-token: your-gateway-token
-      model: openclaw/default
+spring.ai.openclaw:
+  enabled: true
 ```
 
-**认证说明：** 需要在 `RestClient.Builder` 和 `WebClient.Builder` 中手动配置 `Authorization: Bearer <token>` 请求头。参考下方代码示例。
-
-### 3. 注入使用
+### 6.3 Use the bean
 
 ```java
-@RestController
-public class ChatController {
-
-    private final ChatModel chatModel;
-
-    public ChatController(ChatModel chatModel) {
-        this.chatModel = chatModel;
-    }
-
-    @GetMapping("/chat")
-    public String chat(@RequestParam String message) {
-        return chatModel.call(new Prompt(message))
-            .getResult().getOutput().getText();
-    }
-
-    @GetMapping("/chat/stream")
-    public Flux<String> chatStream(@RequestParam String message) {
-        return chatModel.stream(new Prompt(message))
-            .map(response -> response.getResult().getOutput().getText());
+@SpringBootApplication
+public class Application {
+    public static void main(String[] args) {
+        SpringApplication.run(Application.class, args);
     }
 }
 ```
 
-## OpenClaw 特有功能
-
-### Agent 目标路由
-
-OpenClaw 将 `model` 字段解释为 agent 目标，而非原始模型 ID：
+Then inject the auto-configured bean in your code:
 
 ```java
-// 使用默认 agent
-OpenClawChatOptions options = OpenClawChatOptions.builder()
-    .model("openclaw/default")
-    .build();
-
-// 使用指定 agent
-OpenClawChatOptions options = OpenClawChatOptions.builder()
-    .model("openclaw/research")
-    .build();
+@Autowired
+private Object bean;
 ```
 
-### 覆盖后端模型
+## 7. Configuration Reference
 
-通过 `x-openclaw-model` HTTP 请求头覆盖 agent 使用的后端模型：
+### 7.1 Config Prefix
 
-```java
-OpenClawChatOptions options = OpenClawChatOptions.builder()
-    .model("openclaw/default")
-    .xOpenclawModel("openai/gpt-5.4")  // → HTTP 请求头: x-openclaw-model
-    .build();
+`spring.ai.openclaw`
+
+### 7.2 Configuration Items
+
+| Property | Type | Default | Required | Description | Sensitive |
+|---|---|---|:---:|---|:---:|
+| `spring.ai.openclaw.enabled` | boolean | `true` | No | Enable the starter | No |
+<!-- additional properties below -->
+
+## 8. Version Lines and Compatibility
+
+| Branch | JDK | Spring Boot | Component Version | Status |
+|---|---:|---:|---|:---:|
+| `2.3.x` / `2.7.x` | `8+` | 2.3.x / 2.7.x | `1.0.x` | Maintenance |
+| `3.0.x` ~ `3.5.x` | `17` | 3.x | `2.0.x` | Maintenance |
+| `4.0.x` / `4.1.x` | `17+` | 4.x | `3.0.x` | Active |
+
+## 9. Build and Test
+
+```bash
+mvn clean verify
+mvn -pl spring-ai-openclaw -am test
 ```
 
-### 会话路由
+## 10. Troubleshooting
 
-```java
-// 通过 user 字段派生稳定 session key（作为 JSON 请求体字段发送）
-OpenClawChatOptions options = OpenClawChatOptions.builder()
-    .model("openclaw/default")
-    .user("conv:my-conversation-id")
-    .build();
+| Symptom | Diagnosis | Resolution |
+|---|---|---|
+| Bean not created | Check auto-configuration report | Verify `spring.ai.openclaw.enabled=true` and classpath |
+| `ClassNotFoundException` | Missing dependency | Add the required module |
+| Version conflict | `mvn dependency:tree` | Use BOM for version alignment |
 
-// 通过 x-openclaw-session-key 请求头显式控制
-OpenClawChatOptions options = OpenClawChatOptions.builder()
-    .model("openclaw/default")
-    .xOpenclawSessionKey("my-session-key")  // → HTTP 请求头: x-openclaw-session-key
-    .build();
-```
+## 11. Contribution
 
-### 通道上下文
+1. Fork the repository.
+2. Create a feature branch.
+3. Run `mvn clean verify` before submitting.
+4. Submit a pull request.
 
-```java
-OpenClawChatOptions options = OpenClawChatOptions.builder()
-    .model("openclaw/default")
-    .xOpenclawMessageChannel("slack")  // → HTTP 请求头: x-openclaw-message-channel
-    .build();
-```
+## 12. License
 
-### 标准 OpenAI 采样参数
+This project is licensed under the [Apache License, Version 2.0](https://www.apache.org/licenses/LICENSE-2.0).
 
-```java
-OpenClawChatOptions options = OpenClawChatOptions.builder()
-    .model("openclaw/default")
-    .temperature(0.7)
-    .topP(0.9)
-    .frequencyPenalty(0.5)
-    .presencePenalty(0.3)
-    .seed(42)
-    .stop(List.of("END"))
-    .maxTokens(2048)  // → JSON 请求体: max_completion_tokens
-    .build();
-```
+---
 
-## 配置属性
+<div align="center">
 
-| 属性 | 默认值 | 说明 |
-|------|--------|------|
-| `spring.ai.openclaw.base-url` | `http://localhost:18789` | Gateway HTTP 根地址 |
-| `spring.ai.openclaw.gateway-auth-token` | | 控制面认证令牌 (`gateway.auth.token`) |
-| `spring.ai.openclaw.gateway-auth-password` | | 控制面密码 (`gateway.auth.password`) |
-| `spring.ai.openclaw.model` | `openclaw/default` | 默认 agent 目标模型 |
-| `spring.ai.openclaw.connect-timeout-millis` | `15000` | 连接超时 |
-| `spring.ai.openclaw.read-timeout-millis` | `120000` | 读取超时 |
-| `spring.ai.openclaw.verify-ssl` | `true` | 是否校验 HTTPS 证书 |
+[Back to top](#readme-top) · [Issues](https://github.com/easy-4-java/spring-ai-openclaw/issues) · [Repository](https://github.com/easy-4-java/spring-ai-openclaw)
 
-## API 参考
-
-### ChatRequest 请求体字段
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `model` | String | Agent 目标 ID（如 `openclaw/default`） |
-| `messages` | List\<Message\> | 对话消息列表 |
-| `stream` | Boolean | 是否启用 SSE 流式响应 |
-| `tools` | List\<Tool\> | 工具定义列表 |
-| `tool_choice` | Object | 工具选择策略（`"auto"`/`"none"`/`"required"` 等） |
-| `max_completion_tokens` | Integer | 最大输出 token 数 |
-| `temperature` | Double | 采样温度 (0.0–2.0) |
-| `top_p` | Double | 核采样概率 |
-| `frequency_penalty` | Double | 频率惩罚 (-2.0–2.0) |
-| `presence_penalty` | Double | 存在惩罚 (-2.0–2.0) |
-| `seed` | Integer | 随机种子 |
-| `stop` | Object | 停止序列（String 或 List\<String\>，最多 4 个） |
-| `user` | String | 用户标识，用于派生稳定会话 key |
-
-### HTTP 请求头（OpenClaw 特有）
-
-| 请求头 | 对应 Builder 方法 | 说明 |
-|--------|-----------------|------|
-| `x-openclaw-model` | `.xOpenclawModel(...)` | 覆盖 agent 的后端 provider/model |
-| `x-openclaw-session-key` | `.xOpenclawSessionKey(...)` | 显式会话路由 key |
-| `x-openclaw-message-channel` | `.xOpenclawMessageChannel(...)` | 综合通道上下文（如 `"slack"`） |
-| `x-openclaw-agent-id` | `.xOpenclawAgentId(...)` | 兼容性 agent-id 覆盖 |
-
-### ChatResponse 响应字段（OpenAI 兼容格式）
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `id` | String | 响应唯一标识 |
-| `object` | String | 对象类型（`chat.completion` 或 `chat.completion.chunk`） |
-| `created` | Long | Unix 时间戳 |
-| `model` | String | 使用的模型 |
-| `choices[].index` | Integer | 选项索引 |
-| `choices[].message` | Message | 非流式：完整消息 |
-| `choices[].delta` | Message | 流式：增量更新 |
-| `choices[].finish_reason` | String | 结束原因（`stop`, `tool_calls` 等） |
-| `usage` | Usage | token 使用统计 |
-
-## 相关文档
-
-- [OpenAI Chat Completions](https://docs.openclaw.ai/gateway/openai-http-api)
-- [OpenResponses API](https://docs.openclaw.ai/gateway/openresponses-http-api)
-- [Gateway Protocol](https://docs.openclaw.ai/gateway/protocol)
-
-## 依赖关系
-
-- Spring Boot 3.4+
-- Spring AI 1.0.0+
-- JDK 17+
+</div>
