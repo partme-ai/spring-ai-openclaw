@@ -4,9 +4,9 @@
 
 # spring-ai-openclaw
 
-**Spring Boot Starter for spring-ai-openclaw**
+**Spring AI model integration for OpenClaw**
 
-[![Maven Central](https://img.shields.io/maven-central/v/io.github.easy4j/spring-ai-openclaw)](https://github.com/easy-4-java/spring-ai-openclaw)
+[![Maven Central](https://img.shields.io/maven-central/v/io.github.partmeai/spring-ai-openclaw)](https://github.com/partme-ai/spring-ai-openclaw)
 [![Java](https://img.shields.io/badge/Java-17-orange)](#3-requirements-and-compatibility)
 [![License](https://img.shields.io/badge/license-Apache-2.0-green)](https://www.apache.org/licenses/LICENSE-2.0)
 
@@ -21,61 +21,59 @@
 
 ---
 
-> **Current Version**：`3.5.x.20260527-SNAPSHOT`<br>
+> **Current Version**：`2.0.x.20260630-SNAPSHOT`<br>
 > **JDK Baseline**：`17`<br>
-> **Group ID**：`io.github.easy4j`<br>
+> **Group ID**：`io.github.partmeai`<br>
 > **Artifact ID**：`spring-ai-openclaw`<br>
 > **License**：Apache License 2.0<br>
 
 ## 1. Positioning
 
-**spring-ai-openclaw** is a Spring Boot starter that integrates **spring-ai-openclaw** for applications using spring-ai-openclaw. It provides auto-configuration, property binding, and ready-to-use beans so that applications can consume spring-ai-openclaw capabilities with minimal setup.
+**spring-ai-openclaw** adapts the OpenClaw Gateway HTTP APIs to Spring AI chat, embedding, and response model contracts. Clients are created explicitly through builders so applications retain ownership of credentials, HTTP configuration, concurrency limits, and lifecycle.
 
 | Dimension | Description |
 |---|---|
-| Type | Spring Boot Starter |
-| Consumers | Spring Boot applications using spring-ai-openclaw |
-| Core Capabilities | auto-configuration, property binding, ready-to-use beans for spring-ai-openclaw |
+| Type | Spring AI model integration module |
+| Consumers | Spring AI applications using an OpenClaw Gateway |
+| Core Capabilities | ChatModel, EmbeddingModel, Responses API, SSE and tool calling |
 | JDK | `17` |
-| Coordinates | `io.github.easy4j:spring-ai-openclaw:3.5.x.20260527-SNAPSHOT` |
-| Config Prefix | `spring.ai.openclaw` |
+| Coordinates | `io.github.partmeai:spring-ai-openclaw:2.0.x.20260630-SNAPSHOT` |
 
 ## 2. Core Capabilities
 
 | Capability | Status | Description |
 |---|:---:|---|
-| Auto-configuration | ✅ Stable | Registers spring-ai-openclaw beans automatically |
-| Property Binding | ✅ Stable | Binds `spring.ai.openclaw.*` to `Properties` |
-| Ready-to-use beans | ✅ Stable | Auto-registered via auto-configuration |
+| Chat model | ✅ Stable | OpenClaw chat completion and streaming adapter |
+| Embedding model | ✅ Stable | OpenClaw embedding adapter |
+| Responses model | ✅ Stable | OpenClaw Responses API adapter |
+| Concurrency control | ✅ Stable | Bounded, non-blocking request admission |
 
 ## 3. Requirements and Compatibility
 
 | Dependency | Minimum | Evidence |
 |---|---:|---|
 | JDK | `17` | `pom.xml` |
-| Spring Boot | `3.x` | `pom.xml` parent |
+| Spring AI | `2.0.0` | `spring-ai-bom` |
+| Spring Framework | `7.0.8` | `spring-framework-bom` |
 | Maven | `3.6+` | Maven Enforcer |
 
-## 4. Auto-configuration
+## 4. Main Components
 
-The starter auto-configures the following beans:
-
-| Bean | Condition | Missing Behavior |
-|---|---|---|
-| `Object` | classpath + property | not created |
-
-Auto-configuration registration:
-
-- `META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports` (Spring Boot 2.7+ / 3.x / 4.x)
-- `META-INF/spring.factories` (Spring Boot 2.x legacy)
+| Component | Responsibility |
+|---|---|
+| `OpenClawApi` | Chat, embedding, model discovery, and SSE transport |
+| `OpenClawResponsesApi` | OpenAI-compatible Responses API transport |
+| `OpenClawChatModel` | Spring AI `ChatModel` and `StreamingChatModel` adapter |
+| `OpenClawEmbeddingModel` | Spring AI embedding adapter |
+| `OpenClawResponsesModel` | Spring AI Responses model adapter |
 
 ## 5. Dependency
 
 ```xml
 <dependency>
-    <groupId>io.github.easy4j</groupId>
+    <groupId>io.github.partmeai</groupId>
     <artifactId>spring-ai-openclaw</artifactId>
-    <version>3.5.x.20260527-SNAPSHOT</version>
+    <version>2.0.x.20260630-SNAPSHOT</version>
 </dependency>
 ```
 
@@ -89,49 +87,31 @@ Add the dependency above to your `pom.xml`.
 
 ### 6.2 Configure
 
-```yaml
-spring.ai.openclaw:
-  enabled: true
+```java
+OpenClawApi api = OpenClawApi.builder().build();
+OpenClawChatModel chatModel = OpenClawChatModel.builder()
+    .openclawApi(api)
+    .build();
 ```
 
-### 6.3 Use the bean
+### 6.3 Use the model
 
 ```java
-@SpringBootApplication
-public class Application {
-    public static void main(String[] args) {
-        SpringApplication.run(Application.class, args);
-    }
-}
+ChatResponse response = chatModel.call(new Prompt("Hello OpenClaw"));
 ```
 
-Then inject the auto-configured bean in your code:
+## 7. Builder Configuration
 
-```java
-@Autowired
-private Object bean;
-```
-
-## 7. Configuration Reference
-
-### 7.1 Config Prefix
-
-`spring.ai.openclaw`
-
-### 7.2 Configuration Items
-
-| Property | Type | Default | Required | Description | Sensitive |
-|---|---|---|:---:|---|:---:|
-| `spring.ai.openclaw.enabled` | boolean | `true` | No | Enable the starter | No |
-<!-- additional properties below -->
+The module does not bind a Spring Boot property prefix. Configure the Gateway URL,
+HTTP builders, error handlers, and concurrency limit through `OpenClawApi.Builder`;
+configure model defaults and tool calling through the model builders.
 
 ## 8. Version Lines and Compatibility
 
-| Branch | JDK | Spring Boot | Component Version | Status |
+| Branch | JDK | Platform | Component Version | Status |
 |---|---:|---:|---|:---:|
-| `2.3.x` / `2.7.x` | `8+` | 2.3.x / 2.7.x | `1.0.x` | Maintenance |
-| `3.0.x` ~ `3.5.x` | `17` | 3.x | `2.0.x` | Maintenance |
-| `4.0.x` / `4.1.x` | `17+` | 4.x | `3.0.x` | Active |
+| `feature/1.0.x` | `17` | Spring AI 1.1.7 / Framework 6.2.x | `1.0.x.20260630-SNAPSHOT` | Maintenance |
+| `feature/2.0.x` | `17` | Spring AI 2.0.0 / Framework 7.0.x | `2.0.x.20260630-SNAPSHOT` | Current |
 
 ## 9. Build and Test
 
