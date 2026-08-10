@@ -24,13 +24,21 @@ import org.springframework.aot.hint.RuntimeHintsRegistrar;
 import static org.springframework.ai.aot.AiRuntimeHints.findJsonAnnotatedClassesInPackage;
 
 /**
- * The OpenClawRuntimeHints class is responsible for registering runtime hints
- * for OpenClaw API classes.
+ * <p>OpenClaw 原生镜像运行时提示注册器。</p>
+ *
+ * <p>为 OpenClaw 包内带 JSON 注解的类型及自定义思考选项序列化器注册全部成员反射访问，
+ * 使 AOT/原生镜像运行时能够完成 Jackson 序列化与反序列化。</p>
  */
 public class OpenClawRuntimeHints implements RuntimeHintsRegistrar {
 
+	/**
+	 * <p>注册 OpenClaw JSON 类型的反射提示。</p>
+	 * @param hints org.springframework.aot.hint.RuntimeHints 运行时提示注册表
+	 * @param classLoader java.lang.ClassLoader AOT 分析使用的类加载器
+	 */
 	@Override
 	public void registerHints(RuntimeHints hints, ClassLoader classLoader) {
+		// JSON 模型统一注册全部成员类别，另显式覆盖注解引用的自定义处理器。
 		var mcs = MemberCategory.values();
 		for (var tr : findJsonAnnotatedClassesInPackage("io.github.partmeai.openclaw")) {
 			hints.reflection().registerType(tr, mcs);

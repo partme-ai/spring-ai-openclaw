@@ -45,10 +45,10 @@ import org.springframework.ai.chat.observation.DefaultChatModelObservationConven
 import org.springframework.ai.chat.prompt.ChatOptions;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.model.ModelOptionsUtils;
-import org.springframework.ai.model.tool.DefaultToolExecutionEligibilityPredicate;
+import org.springframework.ai.util.JsonHelper;
 import org.springframework.ai.model.tool.ToolCallingChatOptions;
 import org.springframework.ai.model.tool.ToolCallingManager;
-import org.springframework.ai.model.tool.ToolExecutionEligibilityPredicate;
+import org.springframework.ai.model.tool.ToolExecutionEligibilityChecker;
 import org.springframework.ai.model.tool.ToolExecutionResult;
 import org.springframework.ai.model.tool.internal.ToolCallReactiveContextHolder;
 import io.github.partmeai.openclaw.api.OpenClawApi;
@@ -59,7 +59,7 @@ import io.github.partmeai.openclaw.api.OpenClawChatOptions;
 import io.github.partmeai.openclaw.api.OpenClawModel;
 import io.github.partmeai.openclaw.api.common.OpenClawApiConstants;
 import org.springframework.ai.tool.definition.ToolDefinition;
-import org.springframework.retry.support.RetryTemplate;
+import org.springframework.core.retry.RetryTemplate;
 import org.springframework.util.Assert;
 import org.springframework.util.CollectionUtils;
 import org.springframework.util.StringUtils;
@@ -85,7 +85,7 @@ public class OpenClawChatModel implements ChatModel {
 	/**
 	 * <p>默认重试模板，仅执行一次请求，不额外重试。</p>
 	 */
-	private static final RetryTemplate DEFAULT_RETRY_TEMPLATE = RetryTemplate.builder().maxAttempts(1).build();
+	private static final RetryTemplate DEFAULT_RETRY_TEMPLATE = new RetryTemplate(org.springframework.core.retry.RetryPolicy.withMaxRetries(0));
 
 	/**
 	 * <p>默认聊天模型观测约定。</p>
@@ -122,7 +122,7 @@ public class OpenClawChatModel implements ChatModel {
 	/**
 	 * <p>判断当前模型响应是否需要执行工具的策略。</p>
 	 */
-	private final ToolExecutionEligibilityPredicate toolExecutionEligibilityPredicate;
+	private final ToolExecutionEligibilityChecker toolExecutionEligibilityPredicate;
 
 	/**
 	 * <p>当前实例使用的聊天模型观测约定。</p>
@@ -146,7 +146,7 @@ public class OpenClawChatModel implements ChatModel {
 	public OpenClawChatModel(OpenClawApi openclawApi, OpenClawChatOptions defaultOptions,
 			ToolCallingManager toolCallingManager, ObservationRegistry observationRegistry) {
 		this(openclawApi, defaultOptions, toolCallingManager, observationRegistry,
-				new DefaultToolExecutionEligibilityPredicate(), DEFAULT_RETRY_TEMPLATE);
+				(response -> response.hasToolCalls()), DEFAULT_RETRY_TEMPLATE);
 	}
 
 	/**
@@ -156,13 +156,13 @@ public class OpenClawChatModel implements ChatModel {
 	 * @param defaultOptions io.github.partmeai.openclaw.api.OpenClawChatOptions 默认聊天选项
 	 * @param toolCallingManager org.springframework.ai.model.tool.ToolCallingManager 工具调用管理器
 	 * @param observationRegistry io.micrometer.observation.ObservationRegistry 观测注册表
-	 * @param toolExecutionEligibilityPredicate org.springframework.ai.model.tool.ToolExecutionEligibilityPredicate 工具执行判定策略
-	 * @param retryTemplate org.springframework.retry.support.RetryTemplate 同步请求重试模板
+	 * @param toolExecutionEligibilityPredicate org.springframework.ai.model.tool.ToolExecutionEligibilityChecker 工具执行判定策略
+	 * @param retryTemplate org.springframework.core.retry.RetryTemplate 同步请求重试模板
 	 * @throws java.lang.IllegalArgumentException 当任一参数为 {@code null} 时抛出
 	 */
 	public OpenClawChatModel(OpenClawApi openclawApi, OpenClawChatOptions defaultOptions,
 			ToolCallingManager toolCallingManager, ObservationRegistry observationRegistry,
-			ToolExecutionEligibilityPredicate toolExecutionEligibilityPredicate,
+			ToolExecutionEligibilityChecker toolExecutionEligibilityPredicate,
 			RetryTemplate retryTemplate) {
 
 		Assert.notNull(openclawApi, "openclawApi must not be null");
@@ -319,8 +319,7 @@ public class OpenClawChatModel implements ChatModel {
 				.map(apiResponse -> toChatResponse(apiResponse, previousChatResponse))
 				.doOnNext(observationContext::setResponse)
 				.flatMap(response -> {
-					if (!this.toolExecutionEligibilityPredicate
-							.isToolExecutionRequired(prompt.getOptions(), response)) {
+					if (!isToolExecutionRequired(prompt, response)) {
 						return Mono.just(response);
 					}
 					// 工具管理器为同步 API，将其移出响应式事件线程并临时恢复 Reactor 上下文。
@@ -366,7 +365,7 @@ public class OpenClawChatModel implements ChatModel {
 			.observe(() -> {
 
 				OpenClawApi.ChatResponse openclawResponse =
-						this.retryTemplate.execute(ctx -> this.chatApi.chat(request, headers));
+						this.retryTemplate.invoke(() -> this.chatApi.chat(request, headers));
 
 				List<AssistantMessage.ToolCall> toolCalls = getResponseToolCalls(openclawResponse)
 					.stream()
@@ -399,7 +398,7 @@ public class OpenClawChatModel implements ChatModel {
 			});
 
 		// 工具结果不要求直接返回时，递归进入下一轮模型请求。
-		if (this.toolExecutionEligibilityPredicate.isToolExecutionRequired(prompt.getOptions(), response)) {
+		if (isToolExecutionRequired(prompt, response)) {
 			var toolExecutionResult = this.toolCallingManager.executeToolCalls(prompt, response);
 			if (toolExecutionResult.returnDirect()) {
 				return ChatResponse.builder()
@@ -501,8 +500,7 @@ public class OpenClawChatModel implements ChatModel {
 
 			// concatMap 保持 SSE 响应顺序，并串行执行可能触发的工具调用轮次。
 			Flux<ChatResponse> chatResponseFlux = chatResponse.concatMap(response -> {
-				if (this.toolExecutionEligibilityPredicate.isToolExecutionRequired(
-						prompt.getOptions(), response)) {
+				if (isToolExecutionRequired(prompt, response)) {
 					return Flux.deferContextual(ctx -> {
 						ToolExecutionResult toolExecutionResult;
 						try {
@@ -533,7 +531,22 @@ public class OpenClawChatModel implements ChatModel {
 			.contextWrite(ctx -> ctx.put(ObservationThreadLocalAccessor.KEY, observation));
 
 			return new MessageAggregator().aggregate(chatResponseFlux, observationContext::setResponse);
-		});
+			});
+	}
+
+	/**
+	 * <p>判断本轮响应是否应由模型内部执行工具。</p>
+	 *
+	 * @param prompt org.springframework.ai.chat.prompt.Prompt 已合并默认选项的请求提示
+	 * @param response org.springframework.ai.chat.model.ChatResponse 当前模型响应
+	 * @return boolean 响应包含工具调用且未显式关闭内部执行时返回 {@code true}
+	 */
+	private boolean isToolExecutionRequired(Prompt prompt, ChatResponse response) {
+		if (prompt.getOptions() instanceof OpenClawChatOptions options
+				&& Boolean.FALSE.equals(options.getInternalToolExecutionEnabled())) {
+			return false;
+		}
+		return this.toolExecutionEligibilityPredicate.isToolCallResponse(response);
 	}
 
 	/**
@@ -544,44 +557,9 @@ public class OpenClawChatModel implements ChatModel {
 	 * @throws java.lang.IllegalArgumentException 当合并后缺少模型或工具回调无效时抛出
 	 */
 	Prompt buildRequestPrompt(Prompt prompt) {
-		OpenClawChatOptions runtimeOptions = null;
-		if (prompt.getOptions() != null) {
-			if (prompt.getOptions() instanceof OpenClawChatOptions ocOpts) {
-				runtimeOptions = ModelOptionsUtils.copyToTarget(
-						OpenClawChatOptions.fromOptions(ocOpts),
-						OpenClawChatOptions.class, OpenClawChatOptions.class);
-			}
-			else if (prompt.getOptions() instanceof ToolCallingChatOptions tcOpts) {
-				runtimeOptions = ModelOptionsUtils.copyToTarget(tcOpts,
-						ToolCallingChatOptions.class, OpenClawChatOptions.class);
-			}
-			else {
-				runtimeOptions = ModelOptionsUtils.copyToTarget(prompt.getOptions(),
-						ChatOptions.class, OpenClawChatOptions.class);
-			}
-		}
-
-		OpenClawChatOptions requestOptions = ModelOptionsUtils.merge(
-				runtimeOptions, this.defaultOptions, OpenClawChatOptions.class);
-
-		if (runtimeOptions != null) {
-			requestOptions.setInternalToolExecutionEnabled(ModelOptionsUtils.mergeOption(
-				runtimeOptions.getInternalToolExecutionEnabled(),
-				this.defaultOptions.getInternalToolExecutionEnabled()));
-			requestOptions.setToolNames(ToolCallingChatOptions.mergeToolNames(
-				runtimeOptions.getToolNames(), this.defaultOptions.getToolNames()));
-			requestOptions.setToolCallbacks(ToolCallingChatOptions.mergeToolCallbacks(
-				runtimeOptions.getToolCallbacks(), this.defaultOptions.getToolCallbacks()));
-			requestOptions.setToolContext(ToolCallingChatOptions.mergeToolContext(
-				runtimeOptions.getToolContext(), this.defaultOptions.getToolContext()));
-		}
-		else {
-			requestOptions.setInternalToolExecutionEnabled(
-					this.defaultOptions.getInternalToolExecutionEnabled());
-			requestOptions.setToolNames(this.defaultOptions.getToolNames());
-			requestOptions.setToolCallbacks(this.defaultOptions.getToolCallbacks());
-			requestOptions.setToolContext(this.defaultOptions.getToolContext());
-		}
+		OpenClawChatOptions runtimeOptions = prompt.getOptions() == null
+			? null : OpenClawChatOptions.fromOptions(prompt.getOptions());
+		OpenClawChatOptions requestOptions = OpenClawChatOptions.merge(runtimeOptions, this.defaultOptions);
 
 		if (!StringUtils.hasText(requestOptions.getModel())) {
 			throw new IllegalArgumentException("model cannot be null or empty");
@@ -712,7 +690,7 @@ public class OpenClawChatModel implements ChatModel {
 		return toolDefinitions.stream().map(toolDefinition -> {
 			var function = new ChatRequest.Tool.Function(
 					toolDefinition.name(), toolDefinition.description(),
-					ModelOptionsUtils.jsonToMap(toolDefinition.inputSchema()));
+					new JsonHelper().fromJsonToMap(toolDefinition.inputSchema()));
 			return new ChatRequest.Tool(function);
 		}).toList();
 	}
@@ -756,8 +734,8 @@ public class OpenClawChatModel implements ChatModel {
 		private ToolCallingManager toolCallingManager;
 
 		/** <p>工具执行判定策略。</p> */
-		private ToolExecutionEligibilityPredicate toolExecutionEligibilityPredicate =
-				new DefaultToolExecutionEligibilityPredicate();
+		private ToolExecutionEligibilityChecker toolExecutionEligibilityPredicate =
+				(response -> response.hasToolCalls());
 
 		/** <p>观测注册表。</p> */
 		private ObservationRegistry observationRegistry = ObservationRegistry.NOOP;
@@ -800,11 +778,11 @@ public class OpenClawChatModel implements ChatModel {
 
 		/**
 		 * <p>设置工具执行判定策略。</p>
-		 * @param toolExecutionEligibilityPredicate org.springframework.ai.model.tool.ToolExecutionEligibilityPredicate 判定策略
+		 * @param toolExecutionEligibilityPredicate org.springframework.ai.model.tool.ToolExecutionEligibilityChecker 判定策略
 		 * @return io.github.partmeai.openclaw.OpenClawChatModel.Builder 当前构建器
 		 */
 		public Builder toolExecutionEligibilityPredicate(
-				ToolExecutionEligibilityPredicate toolExecutionEligibilityPredicate) {
+				ToolExecutionEligibilityChecker toolExecutionEligibilityPredicate) {
 			this.toolExecutionEligibilityPredicate = toolExecutionEligibilityPredicate;
 			return this;
 		}
@@ -821,7 +799,7 @@ public class OpenClawChatModel implements ChatModel {
 
 		/**
 		 * <p>设置同步请求重试模板。</p>
-		 * @param retryTemplate org.springframework.retry.support.RetryTemplate 重试模板
+		 * @param retryTemplate org.springframework.core.retry.RetryTemplate 重试模板
 		 * @return io.github.partmeai.openclaw.OpenClawChatModel.Builder 当前构建器
 		 */
 		public Builder retryTemplate(RetryTemplate retryTemplate) {

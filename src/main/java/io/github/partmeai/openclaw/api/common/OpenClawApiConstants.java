@@ -19,69 +19,51 @@ package io.github.partmeai.openclaw.api.common;
 import org.springframework.ai.observation.conventions.AiProvider;
 
 /**
- * Common value constants for OpenClaw API.
+ * <p>OpenClaw API 通用协议常量与路由判断工具。</p>
  * @see <a href="https://docs.openclaw.ai/gateway/openai-http-api">OpenClaw OpenAI HTTP API</a>
  * @see <a href="https://docs.openclaw.ai/gateway/openresponses-http-api">OpenResponses API</a>
  */
 public final class OpenClawApiConstants {
 
+	/** <p>本地 OpenClaw Gateway 默认地址。</p> */
 	public static final String DEFAULT_BASE_URL = "http://localhost:18789";
 
+	/** <p>Spring AI 观测中使用的提供方名称。</p> */
 	public static final String PROVIDER_NAME = "openclaw";
 
 	// --------------------------------------------------------------------------
 	// HTTP Headers (x-openclaw-*)
 	// --------------------------------------------------------------------------
 
-	/**
-	 * Override the backend provider/model for the selected agent.
-	 * Example: "openai/gpt-4o", "gpt-4.5"
-	 */
+	/** <p>覆盖所选智能体后端提供方/模型的请求头。</p> */
 	public static final String HEADER_X_OPENCLAW_MODEL = "x-openclaw-model";
 
-	/**
-	 * Explicit session routing key for stable session management.
-	 */
+	/** <p>显式会话路由键请求头。</p> */
 	public static final String HEADER_X_OPENCLAW_SESSION_KEY = "x-openclaw-session-key";
 
-	/**
-	 * Synthetic ingress channel context for channel-aware prompts and policies.
-	 * Example: "slack", "discord", "web"
-	 */
+	/** <p>消息入口通道上下文请求头。</p> */
 	public static final String HEADER_X_OPENCLAW_MESSAGE_CHANNEL = "x-openclaw-message-channel";
 
-	/**
-	 * Compatibility agent-id override.
-	 */
+	/** <p>兼容性智能体标识覆盖请求头。</p> */
 	public static final String HEADER_X_OPENCLAW_AGENT_ID = "x-openclaw-agent-id";
 
-	/**
-	 * Scope restriction for the request (honored in trusted-proxy/none auth modes).
-	 */
+	/** <p>受信任代理或无认证模式下的请求作用域限制请求头。</p> */
 	public static final String HEADER_X_OPENCLAW_SCOPES = "x-openclaw-scopes";
 
 	// --------------------------------------------------------------------------
 	// Agent Target Prefixes
 	// --------------------------------------------------------------------------
 
-	/**
-	 * Prefix for OpenClaw agent targets.
-	 */
+	/** <p>OpenClaw 智能体目标斜杠前缀。</p> */
 	public static final String AGENT_PREFIX_OPENCLAW = "openclaw/";
 
-	/**
-	 * Stable alias for the configured default agent.
-	 */
+	/** <p>已配置默认智能体的稳定别名。</p> */
 	public static final String AGENT_DEFAULT = "openclaw/default";
 
-	/**
-	 * Legacy colon-separated prefix (deprecated but supported).
-	 */
+	/** <p>仍受支持的遗留 OpenClaw 冒号前缀。</p> */
 	public static final String AGENT_PREFIX_OPENCLAW_COLON = "openclaw:";
 
-	/**
-	 * Legacy agent: prefix for compatibility.
-	 */
+	/** <p>用于兼容的遗留 agent 冒号前缀。</p> */
 	public static final String AGENT_PREFIX_AGENT_COLON = "agent:";
 
 	// --------------------------------------------------------------------------
@@ -89,8 +71,9 @@ public final class OpenClawApiConstants {
 	// --------------------------------------------------------------------------
 
 	/**
-	 * Check if the given value is an agent target (needs routing) rather than
-	 * a raw provider model id.
+	 * <p>判断值是否为需要智能体路由的目标，而不是原始提供方模型标识。</p>
+	 * @param value java.lang.String 待判断标识
+	 * @return boolean 匹配任一受支持智能体前缀时返回 {@code true}
 	 */
 	public static boolean isAgentTarget(String value) {
 		if (value == null) {

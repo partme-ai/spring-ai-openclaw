@@ -30,11 +30,11 @@ import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonSerialize;
 
 /**
- * Represents the thinking option for chat models. The think option controls whether
- * models emit their reasoning trace before the final answer.
- * <p>
- * Most models (Qwen 3, DeepSeek-v3.1, DeepSeek R1) accept boolean enable/disable. The
- * GPT-OSS model requires string levels: "low", "medium", or "high".
+ * <p>聊天模型的思考选项。</p>
+ *
+ * <p>布尔形式用于只支持启用/禁用的模型；字符串形式用于要求 {@code low}、{@code medium}
+ * 或 {@code high} 等级的模型。自定义 Jackson 处理器把实现直接映射为 JSON 布尔值或字符串，
+ * 不增加包装对象。</p>
  *
  * @author Mark Pollack
  * @since 1.1.0
@@ -46,16 +46,21 @@ import com.fasterxml.jackson.databind.annotation.JsonSerialize;
 public sealed interface ThinkOption {
 
 	/**
-	 * Converts this think option to its JSON representation.
-	 * @return the JSON value (Boolean or String)
+	 * <p>转换为直接写入 JSON 的值。</p>
+	 * @return java.lang.Object 布尔值或字符串
 	 */
 	Object toJsonValue();
 
-	/**
-	 * Serializer that writes ThinkOption as raw boolean or string values.
-	 */
+	/** <p>把思考选项写成原始布尔值或字符串的序列化器。</p> */
 	class ThinkOptionSerializer extends JsonSerializer<ThinkOption> {
 
+		/**
+		 * <p>序列化思考选项。</p>
+		 * @param value io.github.partmeai.openclaw.api.ThinkOption 待序列化选项
+		 * @param gen com.fasterxml.jackson.core.JsonGenerator JSON 生成器
+		 * @param serializers com.fasterxml.jackson.databind.SerializerProvider 序列化上下文
+		 * @throws java.io.IOException 当 JSON 写入失败时抛出
+		 */
 		@Override
 		public void serialize(ThinkOption value, JsonGenerator gen, SerializerProvider serializers) throws IOException {
 			if (value == null) {
@@ -68,11 +73,16 @@ public sealed interface ThinkOption {
 
 	}
 
-	/**
-	 * Deserializer that reads boolean or string values into ThinkOption instances.
-	 */
+	/** <p>把 JSON 布尔值或字符串读取为思考选项的反序列化器。</p> */
 	class ThinkOptionDeserializer extends JsonDeserializer<ThinkOption> {
 
+		/**
+		 * <p>根据当前 JSON token 反序列化思考选项。</p>
+		 * @param p com.fasterxml.jackson.core.JsonParser JSON 解析器
+		 * @param ctxt com.fasterxml.jackson.databind.DeserializationContext 反序列化上下文
+		 * @return io.github.partmeai.openclaw.api.ThinkOption 对应选项；JSON null 返回 {@code null}
+		 * @throws java.io.IOException 当 token 不是布尔值、字符串或 null 时抛出
+		 */
 		@Override
 		public ThinkOption deserialize(JsonParser p, DeserializationContext ctxt) throws IOException {
 			JsonToken token = p.currentToken();
@@ -94,23 +104,21 @@ public sealed interface ThinkOption {
 	}
 
 	/**
-	 * Boolean-style think option for models that support simple enable/disable. Supported
-	 * by Qwen 3, DeepSeek-v3.1, and DeepSeek R1 models.
-	 *
-	 * @param enabled whether thinking is enabled
+	 * <p>布尔型思考选项。</p>
+	 * @param enabled boolean 是否启用思考
 	 */
 	record ThinkBoolean(boolean enabled) implements ThinkOption {
 
-		/**
-		 * Constant for enabled thinking.
-		 */
+		/** <p>启用思考的预定义值。</p> */
 		public static final ThinkBoolean ENABLED = new ThinkBoolean(true);
 
-		/**
-		 * Constant for disabled thinking.
-		 */
+		/** <p>禁用思考的预定义值。</p> */
 		public static final ThinkBoolean DISABLED = new ThinkBoolean(false);
 
+		/**
+		 * <p>转换为 JSON 布尔值。</p>
+		 * @return java.lang.Object 当前 {@code enabled} 布尔值
+		 */
 		@Override
 		public Object toJsonValue() {
 			return this.enabled;
@@ -119,32 +127,27 @@ public sealed interface ThinkOption {
 	}
 
 	/**
-	 * String-level think option for the GPT-OSS model which requires explicit levels.
-	 *
-	 * @param level the thinking level: "low", "medium", or "high"
+	 * <p>字符串等级思考选项。</p>
+	 * @param level java.lang.String {@code low}、{@code medium} 或 {@code high}；也可为 {@code null}
 	 */
 	record ThinkLevel(String level) implements ThinkOption {
 
+		/** <p>合法思考等级。</p> */
 		private static final List<String> VALID_LEVELS = List.of("low", "medium", "high");
 
-		/**
-		 * Low thinking level for GPT-OSS.
-		 */
+		/** <p>低思考等级预定义值。</p> */
 		public static final ThinkLevel LOW = new ThinkLevel("low");
 
-		/**
-		 * Medium thinking level for GPT-OSS.
-		 */
+		/** <p>中思考等级预定义值。</p> */
 		public static final ThinkLevel MEDIUM = new ThinkLevel("medium");
 
-		/**
-		 * High thinking level for GPT-OSS.
-		 */
+		/** <p>高思考等级预定义值。</p> */
 		public static final ThinkLevel HIGH = new ThinkLevel("high");
 
 		/**
-		 * api/ThinkOption.java
-		 * Creates a new ThinkLevel with validation.
+		 * <p>校验思考等级。</p>
+		 * @param level java.lang.String 思考等级，可为 {@code null}
+		 * @throws java.lang.IllegalArgumentException 当非空等级不在合法列表中时抛出
 		 */
 		public ThinkLevel {
 			if (level != null && !VALID_LEVELS.contains(level)) {
@@ -152,6 +155,10 @@ public sealed interface ThinkOption {
 			}
 		}
 
+		/**
+		 * <p>转换为 JSON 字符串值。</p>
+		 * @return java.lang.Object 当前等级字符串
+		 */
 		@Override
 		public Object toJsonValue() {
 			return this.level;

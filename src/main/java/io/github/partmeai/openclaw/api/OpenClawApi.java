@@ -31,6 +31,7 @@ import reactor.core.publisher.Mono;
 
 import org.springframework.ai.retry.RetryUtils;
 import org.springframework.ai.model.ModelOptionsUtils;
+import org.springframework.ai.util.JsonHelper;
 import org.springframework.http.MediaType;
 import org.springframework.util.Assert;
 import org.springframework.web.client.ResponseErrorHandler;
@@ -217,7 +218,7 @@ public final class OpenClawApi {
 				// 先识别结束哨兵，再反序列化真实 JSON 数据块。
 				.takeUntil(SSE_DONE::equals)
 				.filter(data -> !SSE_DONE.equals(data))
-					.map(data -> ModelOptionsUtils.<ChatResponse>jsonToObject(data, ChatResponse.class))
+					.map(data -> new JsonHelper().fromJson(data, ChatResponse.class))
 					.onErrorResume(this.sseErrorHandler::handle);
 			return this.streamToolCallAggregator.aggregate(chunks)
 					.doOnNext(chunk -> {

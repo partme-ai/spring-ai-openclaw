@@ -16,9 +16,9 @@ import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.messages.ToolResponseMessage;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.Prompt;
-import org.springframework.ai.model.ModelOptionsUtils;
+import org.springframework.ai.util.JsonHelper;
 import org.springframework.ai.model.tool.ToolCallingManager;
-import org.springframework.ai.model.tool.ToolExecutionEligibilityPredicate;
+import org.springframework.ai.model.tool.ToolExecutionEligibilityChecker;
 import org.springframework.ai.model.tool.ToolExecutionResult;
 import org.springframework.ai.model.tool.ToolCallingChatOptions;
 import org.springframework.ai.tool.definition.ToolDefinition;
@@ -67,7 +67,7 @@ class OpenClawReactiveToolExecutionTests {
 				return toolExecutionResult;
 			}
 		};
-		ToolExecutionEligibilityPredicate predicate = (options, response) ->
+		ToolExecutionEligibilityChecker predicate = response ->
 				!response.getResult().getOutput().getToolCalls().isEmpty();
 
 		OpenClawApi api = OpenClawApi.builder().baseUrl(this.server.url("/").toString()).build();
@@ -96,9 +96,9 @@ class OpenClawReactiveToolExecutionTests {
 		OpenClawApi.ChatResponse second = chunk(new OpenClawApi.Message.ToolCall(0, null, null,
 				new OpenClawApi.Message.ToolCallFunction(null, "Paris\"}")), null);
 		OpenClawApi.ChatResponse terminal = chunk(null, "tool_calls");
-		return "data: " + ModelOptionsUtils.toJsonString(first) + "\n\n"
-				+ "data: " + ModelOptionsUtils.toJsonString(second) + "\n\n"
-				+ "data: " + ModelOptionsUtils.toJsonString(terminal) + "\n\n"
+		return "data: " + new JsonHelper().toJson(first) + "\n\n"
+				+ "data: " + new JsonHelper().toJson(second) + "\n\n"
+				+ "data: " + new JsonHelper().toJson(terminal) + "\n\n"
 				+ "data: [DONE]\n\n";
 	}
 

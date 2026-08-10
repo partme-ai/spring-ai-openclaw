@@ -22,7 +22,9 @@ import io.github.partmeai.openclaw.api.OpenClawApi.ChatResponse;
 import io.github.partmeai.openclaw.api.OpenClawApi.Message;
 
 /**
- * Helper methods for processing OpenAI-compatible chat completion responses.
+ * <p>OpenAI 兼容聊天补全响应辅助工具。</p>
+ *
+ * <p>所有方法只读取第一个 choice，并兼容非流式 {@code message} 与流式 {@code delta}。</p>
  *
  * @since 1.0.0
  */
@@ -33,7 +35,9 @@ public final class OpenClawApiHelper {
 	}
 
 	/**
-	 * Check if a streaming chunk contains tool calls in its delta.
+	 * <p>判断流式响应块的第一个增量消息是否包含工具调用。</p>
+	 * @param chatResponse io.github.partmeai.openclaw.api.OpenClawApi.ChatResponse 响应块
+	 * @return boolean 包含至少一个工具调用时返回 {@code true}
 	 */
 	public static boolean isStreamingToolCall(ChatResponse chatResponse) {
 		if (chatResponse == null || chatResponse.choices() == null
@@ -45,7 +49,9 @@ public final class OpenClawApiHelper {
 	}
 
 	/**
-	 * Check if a streaming chunk is the final chunk (has a finish_reason).
+	 * <p>判断流式响应块是否携带结束原因。</p>
+	 * @param chatResponse io.github.partmeai.openclaw.api.OpenClawApi.ChatResponse 响应块
+	 * @return boolean 第一个 choice 存在 {@code finish_reason} 时返回 {@code true}
 	 */
 	public static boolean isStreamingDone(ChatResponse chatResponse) {
 		if (chatResponse == null || chatResponse.choices() == null
@@ -56,7 +62,9 @@ public final class OpenClawApiHelper {
 	}
 
 	/**
-	 * Extract content from the first choice's message (non-streaming) or delta (streaming).
+	 * <p>提取第一个 choice 的完整消息或增量消息文本。</p>
+	 * @param response io.github.partmeai.openclaw.api.OpenClawApi.ChatResponse 响应
+	 * @return java.lang.String 消息文本；响应结构缺失时返回 {@code null}
 	 */
 	public static String getContent(ChatResponse response) {
 		if (response == null || response.choices() == null || response.choices().isEmpty()) {
@@ -68,7 +76,9 @@ public final class OpenClawApiHelper {
 	}
 
 	/**
-	 * Extract tool calls from the first choice's message or delta.
+	 * <p>提取第一个 choice 的完整消息或增量消息工具调用。</p>
+	 * @param response io.github.partmeai.openclaw.api.OpenClawApi.ChatResponse 响应
+	 * @return java.util.List&lt;Message.ToolCall&gt; 工具调用；结构缺失时返回空列表
 	 */
 	public static List<Message.ToolCall> getToolCalls(ChatResponse response) {
 		if (response == null || response.choices() == null || response.choices().isEmpty()) {

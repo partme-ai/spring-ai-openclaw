@@ -29,7 +29,6 @@ import org.springframework.ai.chat.messages.ToolResponseMessage.ToolResponse;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.prompt.ChatOptions;
 import org.springframework.ai.chat.prompt.Prompt;
-import org.springframework.ai.model.tool.ToolCallingChatOptions;
 import io.github.partmeai.openclaw.api.OpenClawApi;
 import io.github.partmeai.openclaw.api.OpenClawChatOptions;
 import org.springframework.ai.retry.RetryUtils;
@@ -75,14 +74,15 @@ public class OpenClawChatRequestTests {
 			.build();
 		Prompt prompt = chatModel.buildRequestPrompt(new Prompt("Test message content", runtimeOptions));
 
-		assertThat(((ToolCallingChatOptions) prompt.getOptions())).isNotNull();
-		assertThat(((ToolCallingChatOptions) prompt.getOptions()).getInternalToolExecutionEnabled()).isFalse();
-		assertThat(((ToolCallingChatOptions) prompt.getOptions()).getToolCallbacks()).hasSize(2);
-		assertThat(((ToolCallingChatOptions) prompt.getOptions()).getToolCallbacks()
+		OpenClawChatOptions mergedOptions = (OpenClawChatOptions) prompt.getOptions();
+		assertThat(mergedOptions).isNotNull();
+		assertThat(mergedOptions.getInternalToolExecutionEnabled()).isFalse();
+		assertThat(mergedOptions.getToolCallbacks()).hasSize(2);
+		assertThat(mergedOptions.getToolCallbacks()
 			.stream()
 			.map(toolCallback -> toolCallback.getToolDefinition().name())).containsExactlyInAnyOrder("tool3", "tool4");
-		assertThat(((ToolCallingChatOptions) prompt.getOptions()).getToolNames()).containsExactlyInAnyOrder("tool3");
-		assertThat(((ToolCallingChatOptions) prompt.getOptions()).getToolContext()).containsEntry("key1", "value1")
+		assertThat(mergedOptions.getToolNames()).containsExactlyInAnyOrder("tool3");
+		assertThat(mergedOptions.getToolContext()).containsEntry("key1", "value1")
 			.containsEntry("key2", "valueB");
 	}
 
