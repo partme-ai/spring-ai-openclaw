@@ -24,6 +24,7 @@ import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationRegistry;
 import io.micrometer.observation.contextpropagation.ObservationThreadLocalAccessor;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
 import org.springframework.ai.chat.messages.AssistantMessage;
@@ -208,6 +209,56 @@ public class OpenClawChatModel implements ChatModel {
 		return this.internalCall(requestPrompt, null);
 	}
 
+	public Mono<ChatResponse> callAsync(Prompt prompt) {
+		return this.internalCallAsync(buildRequestPrompt(prompt), null);
+	}
+
+	private Mono<ChatResponse> internalCallAsync(Prompt prompt,
+			ChatResponse previousChatResponse) {
+		return Mono.deferContextual(contextView -> {
+			OpenClawApi.ChatRequest request = openclawChatRequest(prompt, false);
+			Map<String, String> headers = openclawHttpHeaders(prompt);
+			ChatModelObservationContext observationContext = ChatModelObservationContext.builder()
+				.prompt(prompt).provider(OpenClawApiConstants.PROVIDER_NAME).build();
+			Observation observation = ChatModelObservationDocumentation.CHAT_MODEL_OPERATION.observation(
+				this.observationConvention, DEFAULT_OBSERVATION_CONVENTION,
+				() -> observationContext, this.observationRegistry);
+			observation.parentObservation(contextView.getOrDefault(
+				ObservationThreadLocalAccessor.KEY, null)).start();
+
+			return this.chatApi.chatAsync(request, headers)
+				.map(apiResponse -> toChatResponse(apiResponse, previousChatResponse))
+				.doOnNext(observationContext::setResponse)
+				.flatMap(response -> {
+					if (!this.toolExecutionEligibilityPredicate
+							.isToolExecutionRequired(prompt.getOptions(), response)) {
+						return Mono.just(response);
+					}
+					return Mono.fromCallable(() -> {
+						try {
+							ToolCallReactiveContextHolder.setContext(contextView);
+							return this.toolCallingManager.executeToolCalls(prompt, response);
+						}
+						finally {
+							ToolCallReactiveContextHolder.clearContext();
+						}
+					})
+						.subscribeOn(Schedulers.boundedElastic())
+						.flatMap(result -> {
+							if (result.returnDirect()) {
+								return Mono.just(ChatResponse.builder().from(response)
+									.generations(ToolExecutionResult.buildGenerations(result)).build());
+							}
+							return this.internalCallAsync(new Prompt(result.conversationHistory(),
+									prompt.getOptions()), response);
+						});
+				})
+				.doOnError(observation::error)
+				.doFinally(signal -> observation.stop())
+				.contextWrite(context -> context.put(ObservationThreadLocalAccessor.KEY, observation));
+		});
+	}
+
 	private ChatResponse internalCall(Prompt prompt, ChatResponse previousChatResponse) {
 
 		OpenClawApi.ChatRequest request = openclawChatRequest(prompt, false);
@@ -271,6 +322,27 @@ public class OpenClawChatModel implements ChatModel {
 		}
 
 		return response;
+	}
+
+	private ChatResponse toChatResponse(OpenClawApi.ChatResponse apiResponse,
+			ChatResponse previousChatResponse) {
+		List<AssistantMessage.ToolCall> toolCalls = getResponseToolCalls(apiResponse).stream()
+			.map(toolCall -> new AssistantMessage.ToolCall(toolCall.id(),
+				toolCall.type() != null ? toolCall.type() : "function",
+				toolCall.function().name(), toolCall.function().arguments()))
+			.toList();
+		AssistantMessage assistantMessage = AssistantMessage.builder()
+			.content(getResponseContent(apiResponse))
+			.properties(Map.of())
+			.toolCalls(toolCalls)
+			.build();
+		String finishReason = null;
+		if (apiResponse.choices() != null && !apiResponse.choices().isEmpty()) {
+			finishReason = apiResponse.choices().get(0).finishReason();
+		}
+		Generation generation = new Generation(assistantMessage,
+			ChatGenerationMetadata.builder().finishReason(finishReason).build());
+		return new ChatResponse(List.of(generation), from(apiResponse, previousChatResponse));
 	}
 
 	@Override

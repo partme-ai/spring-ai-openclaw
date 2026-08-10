@@ -54,6 +54,8 @@ import org.springframework.web.reactive.function.client.WebClient;
 @Slf4j
 public final class OpenClawApi {
 
+	public static final int DEFAULT_MAX_CONCURRENT_REQUESTS = 512;
+
 	private static final String SSE_DONE = "[DONE]";
 
 	public static Builder builder() {
@@ -70,9 +72,14 @@ public final class OpenClawApi {
 
 	private final AtomicInteger activeStreams = new AtomicInteger();
 
+	private final OpenClawRequestLimiter requestLimiter;
+
+	private final OpenClawStreamToolCallAggregator streamToolCallAggregator =
+			new OpenClawStreamToolCallAggregator();
+
 	private OpenClawApi(String baseUrl, RestClient.Builder restClientBuilder,
 			WebClient.Builder webClientBuilder, ResponseErrorHandler responseErrorHandler,
-			SseErrorHandler sseErrorHandler) {
+			SseErrorHandler sseErrorHandler, int maxConcurrentRequests) {
 		this.restClient = restClientBuilder
 				.clone()
 				.baseUrl(baseUrl)
@@ -93,6 +100,9 @@ public final class OpenClawApi {
 				.build();
 
 		this.sseErrorHandler = sseErrorHandler;
+		this.requestLimiter = new OpenClawRequestLimiter(maxConcurrentRequests);
+		log.debug("Initialized OpenClaw API client: baseUrl={}, maxConcurrentRequests={}",
+				baseUrl, maxConcurrentRequests);
 	}
 
 	// --------------------------------------------------------------------------
@@ -109,7 +119,7 @@ public final class OpenClawApi {
 
 		var requestSpec = this.restClient.post().uri("/v1/chat/completions");
 		extraHeaders.forEach(requestSpec::header);
-		return requestSpec.body(chatRequest).retrieve().body(ChatResponse.class);
+		return this.requestLimiter.execute(() -> requestSpec.body(chatRequest).retrieve().body(ChatResponse.class));
 	}
 
 	public Mono<ChatResponse> chatAsync(ChatRequest chatRequest) {
@@ -121,7 +131,7 @@ public final class OpenClawApi {
 		Assert.isTrue(!chatRequest.stream(), "Stream mode must be disabled.");
 		var requestSpec = this.webClient.post().uri("/v1/chat/completions");
 		extraHeaders.forEach(requestSpec::header);
-		return requestSpec.bodyValue(chatRequest).retrieve().bodyToMono(ChatResponse.class);
+		return this.requestLimiter.guard(requestSpec.bodyValue(chatRequest).retrieve().bodyToMono(ChatResponse.class));
 	}
 
 	/**
@@ -141,28 +151,46 @@ public final class OpenClawApi {
 				.accept(MediaType.TEXT_EVENT_STREAM);
 		extraHeaders.forEach(requestSpec::header);
 
-		return Flux.defer(() -> {
-			this.activeStreams.incrementAndGet();
-			return requestSpec
+		return this.requestLimiter.guard(Flux.defer(() -> {
+			int active = this.activeStreams.incrementAndGet();
+			if (log.isTraceEnabled()) {
+				log.trace("Opened OpenClaw chat stream: activeStreams={}", active);
+			}
+			Flux<ChatResponse> chunks = requestSpec
 				.bodyValue(chatRequest)
 				.retrieve()
 				.bodyToFlux(String.class)
 				.takeUntil(SSE_DONE::equals)
 				.filter(data -> !SSE_DONE.equals(data))
 					.map(data -> ModelOptionsUtils.<ChatResponse>jsonToObject(data, ChatResponse.class))
-					.onErrorResume(this.sseErrorHandler::handle)
+					.onErrorResume(this.sseErrorHandler::handle);
+			return this.streamToolCallAggregator.aggregate(chunks)
 					.doOnNext(chunk -> {
 						if (log.isTraceEnabled()) {
 							log.trace("SSE chunk: {}", chunk);
 						}
 					})
 					.filter(chunk -> chunk.choices() != null && !chunk.choices().isEmpty())
-				.doFinally(signal -> this.activeStreams.decrementAndGet());
-		});
+				.doFinally(signal -> {
+					int remaining = this.activeStreams.decrementAndGet();
+					if (log.isTraceEnabled()) {
+						log.trace("Closed OpenClaw chat stream: signal={}, activeStreams={}",
+								signal, remaining);
+					}
+				});
+		}));
 	}
 
 	public int getActiveStreamCount() {
 		return this.activeStreams.get();
+	}
+
+	public int getInFlightRequestCount() {
+		return this.requestLimiter.getInFlightRequestCount();
+	}
+
+	public int getMaxConcurrentRequests() {
+		return this.requestLimiter.getMaxConcurrentRequests();
 	}
 
 	// --------------------------------------------------------------------------
@@ -177,14 +205,14 @@ public final class OpenClawApi {
 		Assert.notNull(responsesRequest, REQUEST_BODY_NULL_ERROR);
 		var requestSpec = this.restClient.post().uri("/v1/responses");
 		extraHeaders.forEach(requestSpec::header);
-		return requestSpec.body(responsesRequest).retrieve().body(Map.class);
+		return this.requestLimiter.execute(() -> requestSpec.body(responsesRequest).retrieve().body(Map.class));
 	}
 
 	public Mono<Map> responsesAsync(Map<String, Object> responsesRequest, Map<String, String> extraHeaders) {
 		Assert.notNull(responsesRequest, REQUEST_BODY_NULL_ERROR);
 		var requestSpec = this.webClient.post().uri("/v1/responses");
 		extraHeaders.forEach(requestSpec::header);
-		return requestSpec.bodyValue(responsesRequest).retrieve().bodyToMono(Map.class);
+		return this.requestLimiter.guard(requestSpec.bodyValue(responsesRequest).retrieve().bodyToMono(Map.class));
 	}
 
 	// --------------------------------------------------------------------------
@@ -197,11 +225,13 @@ public final class OpenClawApi {
 	 * and {@code openclaw/<agentId>} entries.
 	 */
 	public ListModelResponse listModels() {
-		return this.restClient.get().uri("/v1/models").retrieve().body(ListModelResponse.class);
+		return this.requestLimiter.execute(() -> this.restClient.get()
+			.uri("/v1/models").retrieve().body(ListModelResponse.class));
 	}
 
 	public Mono<ListModelResponse> listModelsAsync() {
-		return this.webClient.get().uri("/v1/models").retrieve().bodyToMono(ListModelResponse.class);
+		return this.requestLimiter.guard(this.webClient.get().uri("/v1/models")
+			.retrieve().bodyToMono(ListModelResponse.class));
 	}
 
 	/**
@@ -209,7 +239,8 @@ public final class OpenClawApi {
 	 */
 	public ModelResponse getModel(String modelId) {
 		Assert.hasText(modelId, "modelId must not be empty");
-		return this.restClient.get().uri("/v1/models/{id}", modelId).retrieve().body(ModelResponse.class);
+		return this.requestLimiter.execute(() -> this.restClient.get()
+			.uri("/v1/models/{id}", modelId).retrieve().body(ModelResponse.class));
 	}
 
 	// --------------------------------------------------------------------------
@@ -224,7 +255,8 @@ public final class OpenClawApi {
 		Assert.notNull(embeddingsRequest, REQUEST_BODY_NULL_ERROR);
 		var requestSpec = this.restClient.post().uri("/v1/embeddings");
 		extraHeaders.forEach(requestSpec::header);
-		return requestSpec.body(embeddingsRequest).retrieve().body(EmbeddingsResponse.class);
+		return this.requestLimiter.execute(() -> requestSpec.body(embeddingsRequest)
+			.retrieve().body(EmbeddingsResponse.class));
 	}
 
 	public Mono<EmbeddingsResponse> embedAsync(EmbeddingsRequest embeddingsRequest,
@@ -232,7 +264,8 @@ public final class OpenClawApi {
 		Assert.notNull(embeddingsRequest, REQUEST_BODY_NULL_ERROR);
 		var requestSpec = this.webClient.post().uri("/v1/embeddings");
 		extraHeaders.forEach(requestSpec::header);
-		return requestSpec.bodyValue(embeddingsRequest).retrieve().bodyToMono(EmbeddingsResponse.class);
+		return this.requestLimiter.guard(requestSpec.bodyValue(embeddingsRequest)
+			.retrieve().bodyToMono(EmbeddingsResponse.class));
 	}
 
 	// ========================================================================
@@ -373,10 +406,15 @@ public final class OpenClawApi {
 		@JsonInclude(Include.NON_NULL)
 		@JsonIgnoreProperties(ignoreUnknown = true)
 		public record ToolCall(
+				@JsonProperty("index") Integer index,
 				@JsonProperty("id") String id,
 				@JsonProperty("type") String type,
 				@JsonProperty("function") ToolCallFunction function
-		) {}
+		) {
+			public ToolCall(String id, String type, ToolCallFunction function) {
+				this(null, id, type, function);
+			}
+		}
 
 		@JsonInclude(Include.NON_NULL)
 		@JsonIgnoreProperties(ignoreUnknown = true)
@@ -523,6 +561,7 @@ public final class OpenClawApi {
 		private WebClient.Builder webClientBuilder = WebClient.builder();
 		private ResponseErrorHandler responseErrorHandler = RetryUtils.DEFAULT_RESPONSE_ERROR_HANDLER;
 		private SseErrorHandler sseErrorHandler = SseErrorHandler.DEFAULT;
+		private int maxConcurrentRequests = DEFAULT_MAX_CONCURRENT_REQUESTS;
 
 		public Builder baseUrl(String baseUrl) {
 			Assert.hasText(baseUrl, "baseUrl cannot be null or empty");
@@ -563,9 +602,17 @@ public final class OpenClawApi {
 			return this;
 		}
 
+		public Builder maxConcurrentRequests(int maxConcurrentRequests) {
+			Assert.isTrue(maxConcurrentRequests > 0,
+					"maxConcurrentRequests must be greater than zero");
+			this.maxConcurrentRequests = maxConcurrentRequests;
+			return this;
+		}
+
 		public OpenClawApi build() {
 			return new OpenClawApi(this.baseUrl, this.restClientBuilder,
-					this.webClientBuilder, this.responseErrorHandler, this.sseErrorHandler);
+					this.webClientBuilder, this.responseErrorHandler, this.sseErrorHandler,
+					this.maxConcurrentRequests);
 		}
 	}
 }

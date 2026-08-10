@@ -184,6 +184,7 @@
                         <excludes>
                             <exclude>**/TestBean.java</exclude>
                         </excludes>
+						<groups>!integration</groups>
                     </configuration>
                 </plugin>
                 <!-- https://mvnrepository.com/artifact/org.apache.maven.plugins/maven-jar-plugin -->

@@ -8,6 +8,7 @@ import io.github.partmeai.openclaw.api.OpenClawApi.Message.Role;
 import io.github.partmeai.openclaw.api.OpenClawChatOptions;
 import io.github.partmeai.openclaw.api.OpenClawModel;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
@@ -20,6 +21,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Integration tests against a real local OpenClaw Gateway.
  * Requires: openclaw gateway --port 18789 --allow-unconfigured
  */
+@Tag("integration")
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 public class OpenClawIntegrationTests {
 

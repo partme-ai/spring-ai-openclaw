@@ -4,9 +4,11 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 
+import lombok.extern.slf4j.Slf4j;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
+@Slf4j
 final class OpenClawRequestLimiter {
 
 	private final int maxConcurrentRequests;
@@ -17,6 +19,7 @@ final class OpenClawRequestLimiter {
 			throw new IllegalArgumentException("maxConcurrentRequests must be greater than zero");
 		}
 		this.maxConcurrentRequests = maxConcurrentRequests;
+		log.debug("Initialized OpenClaw request limiter: maxConcurrentRequests={}", maxConcurrentRequests);
 	}
 
 	<T> T execute(Supplier<T> request) {
@@ -65,16 +68,26 @@ final class OpenClawRequestLimiter {
 		while (true) {
 			int current = this.inFlightRequests.get();
 			if (current >= this.maxConcurrentRequests) {
+				log.debug("Rejecting OpenClaw request: inFlight={}, maxConcurrentRequests={}",
+						current, this.maxConcurrentRequests);
 				return false;
 			}
 			if (this.inFlightRequests.compareAndSet(current, current + 1)) {
+				if (log.isTraceEnabled()) {
+					log.trace("Acquired OpenClaw request slot: inFlight={}/{}",
+							current + 1, this.maxConcurrentRequests);
+				}
 				return true;
 			}
 		}
 	}
 
 	private void release() {
-		this.inFlightRequests.decrementAndGet();
+		int remaining = this.inFlightRequests.decrementAndGet();
+		if (log.isTraceEnabled()) {
+			log.trace("Released OpenClaw request slot: inFlight={}/{}",
+					remaining, this.maxConcurrentRequests);
+		}
 	}
 
 	private RejectedExecutionException rejected() {

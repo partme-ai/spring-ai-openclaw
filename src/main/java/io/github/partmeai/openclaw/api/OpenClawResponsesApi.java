@@ -57,6 +57,8 @@ import org.springframework.web.reactive.function.client.WebClient;
 @Slf4j
 public final class OpenClawResponsesApi {
 
+	public static final int DEFAULT_MAX_CONCURRENT_REQUESTS = 512;
+
 	private static final String SSE_DONE = "[DONE]";
 
 	public static Builder builder() {
@@ -73,8 +75,11 @@ public final class OpenClawResponsesApi {
 
 	private final AtomicInteger activeStreams = new AtomicInteger();
 
+	private final OpenClawRequestLimiter requestLimiter;
+
 	private OpenClawResponsesApi(String baseUrl, RestClient.Builder restClientBuilder,
-			WebClient.Builder webClientBuilder, ResponseErrorHandler responseErrorHandler) {
+			WebClient.Builder webClientBuilder, ResponseErrorHandler responseErrorHandler,
+			int maxConcurrentRequests) {
 
 		this.restClient = restClientBuilder.clone()
 				.baseUrl(baseUrl)
@@ -103,6 +108,9 @@ public final class OpenClawResponsesApi {
 				})
 				.build();
 
+		this.requestLimiter = new OpenClawRequestLimiter(maxConcurrentRequests);
+		log.debug("Initialized OpenClaw Responses API client: baseUrl={}, maxConcurrentRequests={}",
+				baseUrl, maxConcurrentRequests);
 	}
 
 	// --------------------------------------------------------------------------
@@ -125,7 +133,8 @@ public final class OpenClawResponsesApi {
 
 		var requestSpec = this.restClient.post().uri("/v1/responses");
 		extraHeaders.forEach(requestSpec::header);
-		return requestSpec.body(request).retrieve().body(ResponseResult.class);
+		return this.requestLimiter.execute(() -> requestSpec.body(request)
+			.retrieve().body(ResponseResult.class));
 	}
 
 	public Mono<ResponseResult> createResponseAsync(ResponseRequest request) {
@@ -138,7 +147,8 @@ public final class OpenClawResponsesApi {
 		Assert.isTrue(!Boolean.TRUE.equals(request.stream()), "Stream mode must be disabled for sync calls.");
 		var requestSpec = this.webClient.post().uri("/v1/responses");
 		extraHeaders.forEach(requestSpec::header);
-		return requestSpec.bodyValue(request).retrieve().bodyToMono(ResponseResult.class);
+		return this.requestLimiter.guard(requestSpec.bodyValue(request)
+			.retrieve().bodyToMono(ResponseResult.class));
 	}
 
 	/**
@@ -161,8 +171,11 @@ public final class OpenClawResponsesApi {
 				.accept(MediaType.TEXT_EVENT_STREAM);
 		extraHeaders.forEach(requestSpec::header);
 
-		return Flux.defer(() -> {
-			this.activeStreams.incrementAndGet();
+		return this.requestLimiter.guard(Flux.defer(() -> {
+			int active = this.activeStreams.incrementAndGet();
+			if (log.isTraceEnabled()) {
+				log.trace("Opened OpenClaw response stream: activeStreams={}", active);
+			}
 			return requestSpec
 				.bodyValue(request)
 				.retrieve()
@@ -175,12 +188,26 @@ public final class OpenClawResponsesApi {
 						log.trace("SSE event: {}", event);
 					}
 				})
-				.doFinally(signal -> this.activeStreams.decrementAndGet());
-		});
+				.doFinally(signal -> {
+					int remaining = this.activeStreams.decrementAndGet();
+					if (log.isTraceEnabled()) {
+						log.trace("Closed OpenClaw response stream: signal={}, activeStreams={}",
+								signal, remaining);
+					}
+				});
+		}));
 	}
 
 	public int getActiveStreamCount() {
 		return this.activeStreams.get();
+	}
+
+	public int getInFlightRequestCount() {
+		return this.requestLimiter.getInFlightRequestCount();
+	}
+
+	public int getMaxConcurrentRequests() {
+		return this.requestLimiter.getMaxConcurrentRequests();
 	}
 
 	// --------------------------------------------------------------------------
@@ -490,6 +517,7 @@ public final class OpenClawResponsesApi {
 		private RestClient.Builder restClientBuilder = RestClient.builder();
 		private WebClient.Builder webClientBuilder = WebClient.builder();
 		private ResponseErrorHandler responseErrorHandler = RetryUtils.DEFAULT_RESPONSE_ERROR_HANDLER;
+		private int maxConcurrentRequests = DEFAULT_MAX_CONCURRENT_REQUESTS;
 
 		public Builder baseUrl(String baseUrl) {
 			Assert.hasText(baseUrl, "baseUrl cannot be null or empty");
@@ -515,9 +543,17 @@ public final class OpenClawResponsesApi {
 			return this;
 		}
 
+		public Builder maxConcurrentRequests(int maxConcurrentRequests) {
+			Assert.isTrue(maxConcurrentRequests > 0,
+					"maxConcurrentRequests must be greater than zero");
+			this.maxConcurrentRequests = maxConcurrentRequests;
+			return this;
+		}
+
 		public OpenClawResponsesApi build() {
 			return new OpenClawResponsesApi(this.baseUrl, this.restClientBuilder,
-					this.webClientBuilder, this.responseErrorHandler);
+					this.webClientBuilder, this.responseErrorHandler,
+					this.maxConcurrentRequests);
 		}
 	}
 }
