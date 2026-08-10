@@ -65,51 +65,101 @@ import org.springframework.util.CollectionUtils;
 import org.springframework.util.StringUtils;
 
 /**
- * {@link ChatModel} implementation for OpenClaw Gateway.
- * <p>
- * OpenClaw is an AI agent gateway that exposes OpenAI-compatible
- * {@code /v1/chat/completions} and {@code /v1/embeddings} endpoints.
- * It routes requests to configured agents with support for tool calling,
- * streaming, and session management.
- * <p>
- * The {@code model} field uses OpenClaw agent-target routing
- * ({@code openclaw/default}, {@code openclaw/<agentId>}).
- * Use {@link OpenClawChatOptions#setXOpenclawModel(String)} to override
- * the backend provider/model for a given agent.
+ * <p>面向 OpenClaw Gateway 的 Spring AI {@link ChatModel} 实现。</p>
+ *
+ * <p>将 Spring AI 的提示词、聊天选项和工具定义转换为 OpenAI 兼容的
+ * {@code /v1/chat/completions} 请求，并把同步、异步及 SSE 响应映射回
+ * {@link ChatResponse}。模型字段使用 {@code openclaw/default} 或
+ * {@code openclaw/&lt;agentId&gt;} 形式的智能体目标路由；后端提供方模型可通过
+ * {@link OpenClawChatOptions#setXOpenclawModel(String)} 对单次请求覆盖。</p>
+ *
+ * <p>当响应要求执行工具时，本类通过 {@link ToolCallingManager} 执行工具并把工具结果加入
+ * 会话历史，随后递归请求模型。响应式路径把阻塞式工具执行切换到 bounded-elastic 调度器，
+ * 同时传播 Reactor 上下文和 Micrometer Observation 父子关系。</p>
  *
  * @author <a href="https://github.com/loong10k">Loong Wan</a>
  * @see <a href="https://docs.openclaw.ai/gateway/openai-http-api">OpenClaw OpenAI HTTP API</a>
  */
 public class OpenClawChatModel implements ChatModel {
 
+	/**
+	 * <p>默认重试模板，仅执行一次请求，不额外重试。</p>
+	 */
 	private static final RetryTemplate DEFAULT_RETRY_TEMPLATE = RetryTemplate.builder().maxAttempts(1).build();
 
+	/**
+	 * <p>默认聊天模型观测约定。</p>
+	 */
 	private static final ChatModelObservationConvention DEFAULT_OBSERVATION_CONVENTION =
 			new DefaultChatModelObservationConvention();
 
+	/**
+	 * <p>未显式配置时使用的工具调用管理器。</p>
+	 */
 	private static final ToolCallingManager DEFAULT_TOOL_CALLING_MANAGER =
 			ToolCallingManager.builder().build();
 
+	/**
+	 * <p>执行 OpenClaw 聊天 HTTP 请求的 API 客户端。</p>
+	 */
 	private final OpenClawApi chatApi;
 
+	/**
+	 * <p>合并到每次请求中的默认聊天选项。</p>
+	 */
 	private final OpenClawChatOptions defaultOptions;
 
+	/**
+	 * <p>记录聊天模型调用观测数据的注册表。</p>
+	 */
 	private final ObservationRegistry observationRegistry;
 
+	/**
+	 * <p>解析工具定义并执行工具调用的管理器。</p>
+	 */
 	private final ToolCallingManager toolCallingManager;
 
+	/**
+	 * <p>判断当前模型响应是否需要执行工具的策略。</p>
+	 */
 	private final ToolExecutionEligibilityPredicate toolExecutionEligibilityPredicate;
 
+	/**
+	 * <p>当前实例使用的聊天模型观测约定。</p>
+	 */
 	private ChatModelObservationConvention observationConvention = DEFAULT_OBSERVATION_CONVENTION;
 
+	/**
+	 * <p>同步聊天请求使用的重试模板。</p>
+	 */
 	private final RetryTemplate retryTemplate;
 
+	/**
+	 * <p>使用默认工具执行判定策略和默认重试模板创建聊天模型。</p>
+	 *
+	 * @param openclawApi io.github.partmeai.openclaw.api.OpenClawApi OpenClaw API 客户端
+	 * @param defaultOptions io.github.partmeai.openclaw.api.OpenClawChatOptions 默认聊天选项
+	 * @param toolCallingManager org.springframework.ai.model.tool.ToolCallingManager 工具调用管理器
+	 * @param observationRegistry io.micrometer.observation.ObservationRegistry 观测注册表
+	 * @throws java.lang.IllegalArgumentException 当任一参数为 {@code null} 时抛出
+	 */
 	public OpenClawChatModel(OpenClawApi openclawApi, OpenClawChatOptions defaultOptions,
 			ToolCallingManager toolCallingManager, ObservationRegistry observationRegistry) {
 		this(openclawApi, defaultOptions, toolCallingManager, observationRegistry,
 				new DefaultToolExecutionEligibilityPredicate(), DEFAULT_RETRY_TEMPLATE);
 	}
 
+	/**
+	 * <p>使用完整依赖创建聊天模型。</p>
+	 *
+	 * @param openclawApi io.github.partmeai.openclaw.api.OpenClawApi OpenClaw API 客户端
+	 * @param defaultOptions io.github.partmeai.openclaw.api.OpenClawChatOptions 默认聊天选项
+	 * @param toolCallingManager org.springframework.ai.model.tool.ToolCallingManager 工具调用管理器
+	 * @param observationRegistry io.micrometer.observation.ObservationRegistry 观测注册表
+	 * @param toolExecutionEligibilityPredicate org.springframework.ai.model.tool.ToolExecutionEligibilityPredicate 工具执行判定策略
+	 * @param retryTemplate org.springframework.retry.support.RetryTemplate 同步请求重试模板
+	 * @throws java.lang.IllegalArgumentException 当任一参数为 {@code null} 时抛出
+	 */
 	public OpenClawChatModel(OpenClawApi openclawApi, OpenClawChatOptions defaultOptions,
 			ToolCallingManager toolCallingManager, ObservationRegistry observationRegistry,
 			ToolExecutionEligibilityPredicate toolExecutionEligibilityPredicate,
@@ -129,12 +179,23 @@ public class OpenClawChatModel implements ChatModel {
 		this.retryTemplate = retryTemplate;
 	}
 
+	/**
+	 * <p>创建聊天模型构建器。</p>
+	 *
+	 * @return io.github.partmeai.openclaw.OpenClawChatModel.Builder 新构建器
+	 */
 	public static Builder builder() {
 		return new Builder();
 	}
 
 	/**
-	 * Build {@link ChatResponseMetadata} from an OpenAI-compatible chat response.
+	 * <p>从 OpenAI 兼容响应构建聊天响应元数据。</p>
+	 *
+	 * <p>工具调用引发多轮模型请求时，将当前 usage 与上一轮响应 usage 累加。</p>
+	 *
+	 * @param response io.github.partmeai.openclaw.api.OpenClawApi.ChatResponse 当前 API 响应
+	 * @param previousChatResponse org.springframework.ai.chat.model.ChatResponse 上一轮聊天响应，可为 {@code null}
+	 * @return org.springframework.ai.chat.metadata.ChatResponseMetadata 聚合 usage、模型、结束原因和响应标识后的元数据
 	 */
 	static ChatResponseMetadata from(OpenClawApi.ChatResponse response, ChatResponse previousChatResponse) {
 		Assert.notNull(response, "OpenClawApi.ChatResponse must not be null");
@@ -167,6 +228,12 @@ public class OpenClawChatModel implements ChatModel {
 			.build();
 	}
 
+	/**
+	 * <p>读取响应 usage，并把缺失的计数按零处理。</p>
+	 *
+	 * @param response io.github.partmeai.openclaw.api.OpenClawApi.ChatResponse API 响应
+	 * @return org.springframework.ai.chat.metadata.DefaultUsage Spring AI usage 对象
+	 */
 	private static DefaultUsage getDefaultUsage(OpenClawApi.ChatResponse response) {
 		if (response.usage() != null) {
 			return new DefaultUsage(
@@ -177,7 +244,10 @@ public class OpenClawChatModel implements ChatModel {
 	}
 
 	/**
-	 * Extract the first choice's message content from an API response.
+	 * <p>提取 API 响应第一个选项的消息文本。</p>
+	 *
+	 * @param response io.github.partmeai.openclaw.api.OpenClawApi.ChatResponse API 响应
+	 * @return java.lang.String 消息或增量文本；不存在时返回空字符串
 	 */
 	private static String getResponseContent(OpenClawApi.ChatResponse response) {
 		if (response.choices() == null || response.choices().isEmpty()) {
@@ -189,7 +259,10 @@ public class OpenClawChatModel implements ChatModel {
 	}
 
 	/**
-	 * Extract tool calls from the first choice of an API response.
+	 * <p>提取 API 响应第一个选项中的工具调用。</p>
+	 *
+	 * @param response io.github.partmeai.openclaw.api.OpenClawApi.ChatResponse API 响应
+	 * @return java.util.List&lt;OpenClawApi.Message.ToolCall&gt; 工具调用列表；不存在时返回空列表
 	 */
 	private static List<OpenClawApi.Message.ToolCall> getResponseToolCalls(OpenClawApi.ChatResponse response) {
 		if (response.choices() == null || response.choices().isEmpty()) {
@@ -203,18 +276,34 @@ public class OpenClawChatModel implements ChatModel {
 		return msg.toolCalls();
 	}
 
+	/**
+	 * <p>同步执行一次聊天调用，并在需要时继续执行工具调用轮次。</p>
+	 *
+	 * @param prompt org.springframework.ai.chat.prompt.Prompt 原始提示词
+	 * @return org.springframework.ai.chat.model.ChatResponse 最终聊天响应
+	 */
 	@Override
 	public ChatResponse call(Prompt prompt) {
 		Prompt requestPrompt = buildRequestPrompt(prompt);
 		return this.internalCall(requestPrompt, null);
 	}
 
+	/**
+	 * <p>异步执行一次聊天调用，并在需要时继续执行工具调用轮次。</p>
+	 *
+	 * <p>方法返回冷 {@link Mono}；HTTP 请求、Observation 启动和工具执行均在订阅后发生。
+	 * 工具执行被调度到 bounded-elastic 线程池，且执行期间恢复订阅方 Reactor 上下文。</p>
+	 *
+	 * @param prompt org.springframework.ai.chat.prompt.Prompt 原始提示词
+	 * @return reactor.core.publisher.Mono&lt;ChatResponse&gt; 发出最终聊天响应的 Publisher
+	 */
 	public Mono<ChatResponse> callAsync(Prompt prompt) {
 		return this.internalCallAsync(buildRequestPrompt(prompt), null);
 	}
 
 	private Mono<ChatResponse> internalCallAsync(Prompt prompt,
 			ChatResponse previousChatResponse) {
+		// deferContextual 保证每次订阅分别创建请求和 Observation，并读取调用方上下文。
 		return Mono.deferContextual(contextView -> {
 			OpenClawApi.ChatRequest request = openclawChatRequest(prompt, false);
 			Map<String, String> headers = openclawHttpHeaders(prompt);
@@ -234,6 +323,7 @@ public class OpenClawChatModel implements ChatModel {
 							.isToolExecutionRequired(prompt.getOptions(), response)) {
 						return Mono.just(response);
 					}
+					// 工具管理器为同步 API，将其移出响应式事件线程并临时恢复 Reactor 上下文。
 					return Mono.fromCallable(() -> {
 						try {
 							ToolCallReactiveContextHolder.setContext(contextView);
@@ -249,6 +339,7 @@ public class OpenClawChatModel implements ChatModel {
 								return Mono.just(ChatResponse.builder().from(response)
 									.generations(ToolExecutionResult.buildGenerations(result)).build());
 							}
+							// 将工具结果作为新会话历史再次调用模型，并累计上一轮元数据。
 							return this.internalCallAsync(new Prompt(result.conversationHistory(),
 									prompt.getOptions()), response);
 						});
@@ -307,6 +398,7 @@ public class OpenClawChatModel implements ChatModel {
 				return chatResponse;
 			});
 
+		// 工具结果不要求直接返回时，递归进入下一轮模型请求。
 		if (this.toolExecutionEligibilityPredicate.isToolExecutionRequired(prompt.getOptions(), response)) {
 			var toolExecutionResult = this.toolCallingManager.executeToolCalls(prompt, response);
 			if (toolExecutionResult.returnDirect()) {
@@ -345,6 +437,12 @@ public class OpenClawChatModel implements ChatModel {
 		return new ChatResponse(List.of(generation), from(apiResponse, previousChatResponse));
 	}
 
+	/**
+	 * <p>流式执行聊天调用，并聚合 Spring AI 消息及可能产生的工具调用轮次。</p>
+	 *
+	 * @param prompt org.springframework.ai.chat.prompt.Prompt 原始提示词
+	 * @return reactor.core.publisher.Flux&lt;ChatResponse&gt; 聊天响应流
+	 */
 	@Override
 	public Flux<ChatResponse> stream(Prompt prompt) {
 		Prompt requestPrompt = buildRequestPrompt(prompt);
@@ -352,6 +450,7 @@ public class OpenClawChatModel implements ChatModel {
 	}
 
 	private Flux<ChatResponse> internalStream(Prompt prompt, ChatResponse previousChatResponse) {
+		// 每次订阅创建独立 Observation，并把上游 Observation 作为父节点。
 		return Flux.deferContextual(contextView -> {
 			OpenClawApi.ChatRequest request = openclawChatRequest(prompt, true);
 			Map<String, String> headers = openclawHttpHeaders(prompt);
@@ -400,6 +499,7 @@ public class OpenClawChatModel implements ChatModel {
 				return new ChatResponse(List.of(generator), from(chunk, previousChatResponse));
 			});
 
+			// concatMap 保持 SSE 响应顺序，并串行执行可能触发的工具调用轮次。
 			Flux<ChatResponse> chatResponseFlux = chatResponse.concatMap(response -> {
 				if (this.toolExecutionEligibilityPredicate.isToolExecutionRequired(
 						prompt.getOptions(), response)) {
@@ -436,6 +536,13 @@ public class OpenClawChatModel implements ChatModel {
 		});
 	}
 
+	/**
+	 * <p>把运行时选项与模型默认选项合并为实际请求提示词。</p>
+	 *
+	 * @param prompt org.springframework.ai.chat.prompt.Prompt 原始提示词
+	 * @return org.springframework.ai.chat.prompt.Prompt 携带 OpenClaw 选项副本的请求提示词
+	 * @throws java.lang.IllegalArgumentException 当合并后缺少模型或工具回调无效时抛出
+	 */
 	Prompt buildRequestPrompt(Prompt prompt) {
 		OpenClawChatOptions runtimeOptions = null;
 		if (prompt.getOptions() != null) {
@@ -485,7 +592,15 @@ public class OpenClawChatModel implements ChatModel {
 	}
 
 	/**
-	 * Package access for testing.
+	 * <p>把 Spring AI 提示词转换为 OpenAI 兼容聊天请求。</p>
+	 *
+	 * <p>该方法保留包级可见性以供测试。系统、用户、助手和工具消息分别映射到协议角色；
+	 * {@code max_completion_tokens} 优先于遗留的 {@code max_tokens}。</p>
+	 *
+	 * @param prompt org.springframework.ai.chat.prompt.Prompt 已合并 OpenClaw 选项的提示词
+	 * @param stream boolean 是否构建流式请求
+	 * @return io.github.partmeai.openclaw.api.OpenClawApi.ChatRequest 协议请求对象
+	 * @throws java.lang.IllegalArgumentException 当遇到不支持的消息类型时抛出
 	 */
 	OpenClawApi.ChatRequest openclawChatRequest(Prompt prompt, boolean stream) {
 
@@ -549,7 +664,7 @@ public class OpenClawChatModel implements ChatModel {
 			.presencePenalty(requestOptions.getPresencePenalty())
 			.seed(requestOptions.getSeed());
 
-		// max_completion_tokens takes precedence over max_tokens
+		// 网关同时兼容新旧字段，但新字段具有明确的优先级。
 		if (requestOptions.getMaxCompletionTokens() != null) {
 			requestBuilder.maxCompletionTokens(requestOptions.getMaxCompletionTokens());
 		}
@@ -575,7 +690,10 @@ public class OpenClawChatModel implements ChatModel {
 	}
 
 	/**
-	 * Extract x-openclaw-* HTTP headers from prompt options.
+	 * <p>从提示词选项提取 {@code x-openclaw-*} 请求头。</p>
+	 *
+	 * @param prompt org.springframework.ai.chat.prompt.Prompt 请求提示词
+	 * @return java.util.Map&lt;String, String&gt; OpenClaw 专用请求头；非 OpenClaw 选项时返回空映射
 	 */
 	private Map<String, String> openclawHttpHeaders(Prompt prompt) {
 		if (prompt.getOptions() instanceof OpenClawChatOptions ocOpts) {
@@ -584,6 +702,12 @@ public class OpenClawChatModel implements ChatModel {
 		return Map.of();
 	}
 
+	/**
+	 * <p>把 Spring AI 工具定义转换为 OpenAI 函数工具。</p>
+	 *
+	 * @param toolDefinitions java.util.List&lt;ToolDefinition&gt; Spring AI 工具定义
+	 * @return java.util.List&lt;ChatRequest.Tool&gt; 协议工具列表
+	 */
 	private List<ChatRequest.Tool> getTools(List<ToolDefinition> toolDefinitions) {
 		return toolDefinitions.stream().map(toolDefinition -> {
 			var function = new ChatRequest.Tool.Function(
@@ -593,66 +717,123 @@ public class OpenClawChatModel implements ChatModel {
 		}).toList();
 	}
 
+	/**
+	 * <p>获取默认聊天选项的副本。</p>
+	 *
+	 * @return org.springframework.ai.chat.prompt.ChatOptions 默认选项副本
+	 */
 	@Override
 	public ChatOptions getDefaultOptions() {
 		return OpenClawChatOptions.fromOptions(this.defaultOptions);
 	}
 
+	/**
+	 * <p>设置当前聊天模型使用的观测约定。</p>
+	 *
+	 * @param observationConvention org.springframework.ai.chat.observation.ChatModelObservationConvention 观测约定
+	 * @throws java.lang.IllegalArgumentException 当观测约定为 {@code null} 时抛出
+	 */
 	public void setObservationConvention(ChatModelObservationConvention observationConvention) {
 		Assert.notNull(observationConvention, "observationConvention cannot be null");
 		this.observationConvention = observationConvention;
 	}
 
+	/**
+	 * <p>{@link OpenClawChatModel} 构建器。</p>
+	 *
+	 * <p>未设置工具调用管理器时使用类级默认实例；其余字段按构建器默认值或调用方配置传入模型。</p>
+	 */
 	public static final class Builder {
 
+		/** <p>OpenClaw API 客户端。</p> */
 		private OpenClawApi openclawApi;
 
+		/** <p>默认聊天选项。</p> */
 		private OpenClawChatOptions defaultOptions = OpenClawChatOptions.builder()
 				.model(OpenClawModel.DEFAULT.id()).build();
 
+		/** <p>可选的工具调用管理器。</p> */
 		private ToolCallingManager toolCallingManager;
 
+		/** <p>工具执行判定策略。</p> */
 		private ToolExecutionEligibilityPredicate toolExecutionEligibilityPredicate =
 				new DefaultToolExecutionEligibilityPredicate();
 
+		/** <p>观测注册表。</p> */
 		private ObservationRegistry observationRegistry = ObservationRegistry.NOOP;
 
+		/** <p>同步请求重试模板。</p> */
 		private RetryTemplate retryTemplate = DEFAULT_RETRY_TEMPLATE;
 
 		private Builder() {
 		}
 
+		/**
+		 * <p>设置 OpenClaw API 客户端。</p>
+		 * @param openclawApi io.github.partmeai.openclaw.api.OpenClawApi API 客户端
+		 * @return io.github.partmeai.openclaw.OpenClawChatModel.Builder 当前构建器
+		 */
 		public Builder openclawApi(OpenClawApi openclawApi) {
 			this.openclawApi = openclawApi;
 			return this;
 		}
 
+		/**
+		 * <p>设置默认聊天选项。</p>
+		 * @param defaultOptions io.github.partmeai.openclaw.api.OpenClawChatOptions 默认选项
+		 * @return io.github.partmeai.openclaw.OpenClawChatModel.Builder 当前构建器
+		 */
 		public Builder defaultOptions(OpenClawChatOptions defaultOptions) {
 			this.defaultOptions = defaultOptions;
 			return this;
 		}
 
+		/**
+		 * <p>设置工具调用管理器。</p>
+		 * @param toolCallingManager org.springframework.ai.model.tool.ToolCallingManager 工具调用管理器
+		 * @return io.github.partmeai.openclaw.OpenClawChatModel.Builder 当前构建器
+		 */
 		public Builder toolCallingManager(ToolCallingManager toolCallingManager) {
 			this.toolCallingManager = toolCallingManager;
 			return this;
 		}
 
+		/**
+		 * <p>设置工具执行判定策略。</p>
+		 * @param toolExecutionEligibilityPredicate org.springframework.ai.model.tool.ToolExecutionEligibilityPredicate 判定策略
+		 * @return io.github.partmeai.openclaw.OpenClawChatModel.Builder 当前构建器
+		 */
 		public Builder toolExecutionEligibilityPredicate(
 				ToolExecutionEligibilityPredicate toolExecutionEligibilityPredicate) {
 			this.toolExecutionEligibilityPredicate = toolExecutionEligibilityPredicate;
 			return this;
 		}
 
+		/**
+		 * <p>设置观测注册表。</p>
+		 * @param observationRegistry io.micrometer.observation.ObservationRegistry 观测注册表
+		 * @return io.github.partmeai.openclaw.OpenClawChatModel.Builder 当前构建器
+		 */
 		public Builder observationRegistry(ObservationRegistry observationRegistry) {
 			this.observationRegistry = observationRegistry;
 			return this;
 		}
 
+		/**
+		 * <p>设置同步请求重试模板。</p>
+		 * @param retryTemplate org.springframework.retry.support.RetryTemplate 重试模板
+		 * @return io.github.partmeai.openclaw.OpenClawChatModel.Builder 当前构建器
+		 */
 		public Builder retryTemplate(RetryTemplate retryTemplate) {
 			this.retryTemplate = retryTemplate;
 			return this;
 		}
 
+		/**
+		 * <p>构建 OpenClaw 聊天模型。</p>
+		 * @return io.github.partmeai.openclaw.OpenClawChatModel 新聊天模型实例
+		 * @throws java.lang.IllegalArgumentException 当必需依赖为空时由模型构造器抛出
+		 */
 		public OpenClawChatModel build() {
 			if (this.toolCallingManager != null) {
 				return new OpenClawChatModel(this.openclawApi, this.defaultOptions,
