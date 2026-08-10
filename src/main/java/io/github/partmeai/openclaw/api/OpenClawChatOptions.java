@@ -48,7 +48,7 @@ import org.springframework.util.Assert;
  * in the JSON request body. OpenClaw-specific fields ({@code x-openclaw-model},
  * {@code x-openclaw-session-key}, etc.) are sent as HTTP request headers.
  *
- * @author Loong Wan
+ * @author <a href="https://github.com/loong10k">Loong Wan</a>
  * @see <a href="https://docs.openclaw.ai/gateway/openai-http-api">OpenClaw OpenAI HTTP API</a>
  */
 @JsonInclude(Include.NON_NULL)

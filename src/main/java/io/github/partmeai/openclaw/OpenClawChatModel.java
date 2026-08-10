@@ -77,7 +77,7 @@ import org.springframework.util.StringUtils;
  * Use {@link OpenClawChatOptions#setXOpenclawModel(String)} to override
  * the backend provider/model for a given agent.
  *
- * @author Loong Wan
+ * @author <a href="https://github.com/loong10k">Loong Wan</a>
  * @see <a href="https://docs.openclaw.ai/gateway/openai-http-api">OpenClaw OpenAI HTTP API</a>
  */
 public class OpenClawChatModel implements ChatModel {

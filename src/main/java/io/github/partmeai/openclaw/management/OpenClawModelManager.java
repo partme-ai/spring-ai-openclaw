@@ -19,7 +19,7 @@ import lombok.extern.slf4j.Slf4j;
  * Use the returned ids directly as OpenAI {@code model} values in chat
  * completion requests.
  *
- * @author Loong Wan
+ * @author <a href="https://github.com/loong10k">Loong Wan</a>
  * @see <a href="https://docs.openclaw.ai/gateway/openai-http-api#model-list-and-agent-routing">Model list and agent routing</a>
  */
 @Slf4j

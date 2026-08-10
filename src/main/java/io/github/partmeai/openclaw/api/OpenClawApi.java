@@ -46,7 +46,7 @@ import org.springframework.web.reactive.function.client.WebClient;
  * Use HTTP headers ({@code x-openclaw-model}, {@code x-openclaw-session-key}, etc.)
  * to control backend model override, session routing, and channel context.
  *
- * @author Loong Wan
+ * @author <a href="https://github.com/loong10k">Loong Wan</a>
  * @see <a href="https://docs.openclaw.ai/gateway/openai-http-api">OpenClaw OpenAI HTTP API</a>
  */
 @Slf4j

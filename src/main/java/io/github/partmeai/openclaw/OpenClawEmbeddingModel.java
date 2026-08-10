@@ -43,7 +43,7 @@ import org.springframework.util.Assert;
  * Use {@code x-openclaw-model} via {@link OpenClawChatOptions#setXOpenclawModel(String)}
  * to override the backend embedding model.
  *
- * @author Loong Wan
+ * @author <a href="https://github.com/loong10k">Loong Wan</a>
  * @see <a href="https://docs.openclaw.ai/gateway/openai-http-api">OpenClaw OpenAI HTTP API</a>
  */
 @Slf4j

@@ -62,7 +62,7 @@ import reactor.core.publisher.Flux;
  * The {@code model} field uses OpenClaw agent-target routing
  * ({@code openclaw/default}, {@code openclaw/<agentId>}).
  *
- * @author Loong Wan
+ * @author <a href="https://github.com/loong10k">Loong Wan</a>
  * @see <a href="https://docs.openclaw.ai/gateway/openresponses-http-api">OpenResponses API</a>
  */
 @Slf4j

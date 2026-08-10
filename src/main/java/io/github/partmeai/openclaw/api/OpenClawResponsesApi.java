@@ -49,7 +49,7 @@ import org.springframework.web.reactive.function.client.WebClient;
  *   <li>Session management via {@code user} field</li>
  * </ul>
  *
- * @author Loong Wan
+ * @author <a href="https://github.com/loong10k">Loong Wan</a>
  * @see <a href="https://docs.openclaw.ai/gateway/openresponses-http-api">OpenResponses API</a>
  */
 @Slf4j
