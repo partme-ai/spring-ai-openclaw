@@ -18,7 +18,7 @@ package io.github.partmeai.openclaw.api;
 
 import java.util.List;
 import java.util.Map;
-import java.util.function.Function;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonInclude;
@@ -31,10 +31,12 @@ import lombok.extern.slf4j.Slf4j;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
+import org.springframework.ai.model.ModelOptionsUtils;
 import org.springframework.ai.retry.RetryUtils;
 import org.springframework.http.MediaType;
 import org.springframework.util.Assert;
 import org.springframework.web.client.ResponseErrorHandler;
+import org.springframework.web.client.RestClient;
 import org.springframework.web.reactive.function.client.WebClient;
 
 /**
@@ -55,20 +57,33 @@ import org.springframework.web.reactive.function.client.WebClient;
 @Slf4j
 public final class OpenClawResponsesApi {
 
+	private static final String SSE_DONE = "[DONE]";
+
 	public static Builder builder() {
 		return new Builder();
 	}
 
 	public static final String REQUEST_BODY_NULL_ERROR = "The request body can not be null.";
 
+	private final RestClient restClient;
+
 	private final WebClient webClient;
 
 	private final WebClient streamingWebClient;
 
-	private final SseErrorHandler sseErrorHandler;
+	private final AtomicInteger activeStreams = new AtomicInteger();
 
-	private OpenClawResponsesApi(String baseUrl, WebClient.Builder webClientBuilder,
-			ResponseErrorHandler responseErrorHandler, SseErrorHandler sseErrorHandler) {
+	private OpenClawResponsesApi(String baseUrl, RestClient.Builder restClientBuilder,
+			WebClient.Builder webClientBuilder, ResponseErrorHandler responseErrorHandler) {
+
+		this.restClient = restClientBuilder.clone()
+				.baseUrl(baseUrl)
+				.defaultHeaders(headers -> {
+					headers.setContentType(MediaType.APPLICATION_JSON);
+					headers.setAccept(List.of(MediaType.APPLICATION_JSON));
+				})
+				.defaultStatusHandler(responseErrorHandler)
+				.build();
 
 		this.webClient = webClientBuilder
 				.clone()
@@ -88,7 +103,6 @@ public final class OpenClawResponsesApi {
 				})
 				.build();
 
-		this.sseErrorHandler = sseErrorHandler;
 	}
 
 	// --------------------------------------------------------------------------
@@ -109,13 +123,22 @@ public final class OpenClawResponsesApi {
 		Assert.notNull(request, REQUEST_BODY_NULL_ERROR);
 		Assert.isTrue(!Boolean.TRUE.equals(request.stream()), "Stream mode must be disabled for sync calls.");
 
-		var requestSpec = this.webClient.post()
-				.uri("/v1/responses");
+		var requestSpec = this.restClient.post().uri("/v1/responses");
 		extraHeaders.forEach(requestSpec::header);
-		return requestSpec.body(Mono.just(request), ResponseRequest.class)
-				.retrieve()
-				.bodyToMono(ResponseResult.class)
-				.block();
+		return requestSpec.body(request).retrieve().body(ResponseResult.class);
+	}
+
+	public Mono<ResponseResult> createResponseAsync(ResponseRequest request) {
+		return createResponseAsync(request, Map.of());
+	}
+
+	public Mono<ResponseResult> createResponseAsync(ResponseRequest request,
+			Map<String, String> extraHeaders) {
+		Assert.notNull(request, REQUEST_BODY_NULL_ERROR);
+		Assert.isTrue(!Boolean.TRUE.equals(request.stream()), "Stream mode must be disabled for sync calls.");
+		var requestSpec = this.webClient.post().uri("/v1/responses");
+		extraHeaders.forEach(requestSpec::header);
+		return requestSpec.bodyValue(request).retrieve().bodyToMono(ResponseResult.class);
 	}
 
 	/**
@@ -138,26 +161,26 @@ public final class OpenClawResponsesApi {
 				.accept(MediaType.TEXT_EVENT_STREAM);
 		extraHeaders.forEach(requestSpec::header);
 
-		Function<Throwable, Flux<ResponseEvent>> errorHandler = cause -> {
-			String msg = cause.getMessage();
-			// Suppress [DONE] sentinel errors
-			if (msg != null && msg.contains("START_ARRAY") && msg.contains("ResponseEvent")) {
-				return Flux.empty();
-			}
-			return Flux.error(cause);
-		};
-
-		return requestSpec
-				.body(Mono.just(request), ResponseRequest.class)
+		return Flux.defer(() -> {
+			this.activeStreams.incrementAndGet();
+			return requestSpec
+				.bodyValue(request)
 				.retrieve()
-				.bodyToFlux(ResponseEvent.class)
-				.onErrorResume(errorHandler)
-				.handle((event, sink) -> {
+				.bodyToFlux(String.class)
+				.takeUntil(SSE_DONE::equals)
+				.filter(data -> !SSE_DONE.equals(data))
+				.map(data -> ModelOptionsUtils.<ResponseEvent>jsonToObject(data, ResponseEvent.class))
+				.doOnNext(event -> {
 					if (log.isTraceEnabled()) {
 						log.trace("SSE event: {}", event);
 					}
-					sink.next(event);
-				});
+				})
+				.doFinally(signal -> this.activeStreams.decrementAndGet());
+		});
+	}
+
+	public int getActiveStreamCount() {
+		return this.activeStreams.get();
 	}
 
 	// --------------------------------------------------------------------------
@@ -464,13 +487,19 @@ public final class OpenClawResponsesApi {
 	public static final class Builder {
 
 		private String baseUrl = io.github.partmeai.openclaw.api.common.OpenClawApiConstants.DEFAULT_BASE_URL;
+		private RestClient.Builder restClientBuilder = RestClient.builder();
 		private WebClient.Builder webClientBuilder = WebClient.builder();
 		private ResponseErrorHandler responseErrorHandler = RetryUtils.DEFAULT_RESPONSE_ERROR_HANDLER;
-		private SseErrorHandler sseErrorHandler = SseErrorHandler.DEFAULT;
 
 		public Builder baseUrl(String baseUrl) {
 			Assert.hasText(baseUrl, "baseUrl cannot be null or empty");
 			this.baseUrl = baseUrl;
+			return this;
+		}
+
+		public Builder restClientBuilder(RestClient.Builder restClientBuilder) {
+			Assert.notNull(restClientBuilder, "restClientBuilder cannot be null");
+			this.restClientBuilder = restClientBuilder;
 			return this;
 		}
 
@@ -486,18 +515,9 @@ public final class OpenClawResponsesApi {
 			return this;
 		}
 
-		/**
-		 * Configure SSE parse error handling for streaming responses.
-		 */
-		public Builder sseErrorHandler(SseErrorHandler sseErrorHandler) {
-			Assert.notNull(sseErrorHandler, "sseErrorHandler cannot be null");
-			this.sseErrorHandler = sseErrorHandler;
-			return this;
-		}
-
 		public OpenClawResponsesApi build() {
-			return new OpenClawResponsesApi(this.baseUrl, this.webClientBuilder,
-					this.responseErrorHandler, this.sseErrorHandler);
+			return new OpenClawResponsesApi(this.baseUrl, this.restClientBuilder,
+					this.webClientBuilder, this.responseErrorHandler);
 		}
 	}
 }

@@ -57,7 +57,6 @@ import io.github.partmeai.openclaw.api.OpenClawApi.Message.ToolCall;
 import io.github.partmeai.openclaw.api.OpenClawChatOptions;
 import io.github.partmeai.openclaw.api.OpenClawModel;
 import io.github.partmeai.openclaw.api.common.OpenClawApiConstants;
-import org.springframework.ai.retry.RetryUtils;
 import org.springframework.ai.tool.definition.ToolDefinition;
 import org.springframework.retry.support.RetryTemplate;
 import org.springframework.util.Assert;
@@ -82,6 +81,8 @@ import org.springframework.util.StringUtils;
  */
 public class OpenClawChatModel implements ChatModel {
 
+	private static final RetryTemplate DEFAULT_RETRY_TEMPLATE = RetryTemplate.builder().maxAttempts(1).build();
+
 	private static final ChatModelObservationConvention DEFAULT_OBSERVATION_CONVENTION =
 			new DefaultChatModelObservationConvention();
 
@@ -105,7 +106,7 @@ public class OpenClawChatModel implements ChatModel {
 	public OpenClawChatModel(OpenClawApi openclawApi, OpenClawChatOptions defaultOptions,
 			ToolCallingManager toolCallingManager, ObservationRegistry observationRegistry) {
 		this(openclawApi, defaultOptions, toolCallingManager, observationRegistry,
-				new DefaultToolExecutionEligibilityPredicate(), RetryUtils.DEFAULT_RETRY_TEMPLATE);
+				new DefaultToolExecutionEligibilityPredicate(), DEFAULT_RETRY_TEMPLATE);
 	}
 
 	public OpenClawChatModel(OpenClawApi openclawApi, OpenClawChatOptions defaultOptions,
@@ -327,7 +328,7 @@ public class OpenClawChatModel implements ChatModel {
 				return new ChatResponse(List.of(generator), from(chunk, previousChatResponse));
 			});
 
-			Flux<ChatResponse> chatResponseFlux = chatResponse.flatMap(response -> {
+			Flux<ChatResponse> chatResponseFlux = chatResponse.concatMap(response -> {
 				if (this.toolExecutionEligibilityPredicate.isToolExecutionRequired(
 						prompt.getOptions(), response)) {
 					return Flux.deferContextual(ctx -> {
@@ -544,7 +545,7 @@ public class OpenClawChatModel implements ChatModel {
 
 		private ObservationRegistry observationRegistry = ObservationRegistry.NOOP;
 
-		private RetryTemplate retryTemplate = RetryUtils.DEFAULT_RETRY_TEMPLATE;
+		private RetryTemplate retryTemplate = DEFAULT_RETRY_TEMPLATE;
 
 		private Builder() {
 		}

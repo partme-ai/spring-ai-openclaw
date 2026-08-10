@@ -18,6 +18,7 @@ package io.github.partmeai.openclaw.api;
 
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonInclude;
@@ -29,6 +30,7 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import org.springframework.ai.retry.RetryUtils;
+import org.springframework.ai.model.ModelOptionsUtils;
 import org.springframework.http.MediaType;
 import org.springframework.util.Assert;
 import org.springframework.web.client.ResponseErrorHandler;
@@ -52,6 +54,8 @@ import org.springframework.web.reactive.function.client.WebClient;
 @Slf4j
 public final class OpenClawApi {
 
+	private static final String SSE_DONE = "[DONE]";
+
 	public static Builder builder() {
 		return new Builder();
 	}
@@ -63,6 +67,8 @@ public final class OpenClawApi {
 	private final WebClient webClient;
 
 	private final SseErrorHandler sseErrorHandler;
+
+	private final AtomicInteger activeStreams = new AtomicInteger();
 
 	private OpenClawApi(String baseUrl, RestClient.Builder restClientBuilder,
 			WebClient.Builder webClientBuilder, ResponseErrorHandler responseErrorHandler,
@@ -106,6 +112,18 @@ public final class OpenClawApi {
 		return requestSpec.body(chatRequest).retrieve().body(ChatResponse.class);
 	}
 
+	public Mono<ChatResponse> chatAsync(ChatRequest chatRequest) {
+		return chatAsync(chatRequest, Map.of());
+	}
+
+	public Mono<ChatResponse> chatAsync(ChatRequest chatRequest, Map<String, String> extraHeaders) {
+		Assert.notNull(chatRequest, REQUEST_BODY_NULL_ERROR);
+		Assert.isTrue(!chatRequest.stream(), "Stream mode must be disabled.");
+		var requestSpec = this.webClient.post().uri("/v1/chat/completions");
+		extraHeaders.forEach(requestSpec::header);
+		return requestSpec.bodyValue(chatRequest).retrieve().bodyToMono(ChatResponse.class);
+	}
+
 	/**
 	 * Streaming (SSE) response for the chat completion request.
 	 * @see <a href="https://docs.openclaw.ai/gateway/openai-http-api#streaming-sse">OpenClaw Streaming SSE</a>
@@ -123,19 +141,28 @@ public final class OpenClawApi {
 				.accept(MediaType.TEXT_EVENT_STREAM);
 		extraHeaders.forEach(requestSpec::header);
 
-		return requestSpec
-				.body(Mono.just(chatRequest), ChatRequest.class)
+		return Flux.defer(() -> {
+			this.activeStreams.incrementAndGet();
+			return requestSpec
+				.bodyValue(chatRequest)
 				.retrieve()
-				.bodyToFlux(ChatResponse.class)
-				.onErrorResume(sseErrorHandler::handle)
-				.handle((chunk, sink) -> {
-					if (log.isTraceEnabled()) {
-						log.trace("SSE chunk: {}", chunk);
-					}
-					if (chunk.choices() != null && !chunk.choices().isEmpty()) {
-						sink.next(chunk);
-					}
-				});
+				.bodyToFlux(String.class)
+				.takeUntil(SSE_DONE::equals)
+				.filter(data -> !SSE_DONE.equals(data))
+					.map(data -> ModelOptionsUtils.<ChatResponse>jsonToObject(data, ChatResponse.class))
+					.onErrorResume(this.sseErrorHandler::handle)
+					.doOnNext(chunk -> {
+						if (log.isTraceEnabled()) {
+							log.trace("SSE chunk: {}", chunk);
+						}
+					})
+					.filter(chunk -> chunk.choices() != null && !chunk.choices().isEmpty())
+				.doFinally(signal -> this.activeStreams.decrementAndGet());
+		});
+	}
+
+	public int getActiveStreamCount() {
+		return this.activeStreams.get();
 	}
 
 	// --------------------------------------------------------------------------
@@ -153,6 +180,13 @@ public final class OpenClawApi {
 		return requestSpec.body(responsesRequest).retrieve().body(Map.class);
 	}
 
+	public Mono<Map> responsesAsync(Map<String, Object> responsesRequest, Map<String, String> extraHeaders) {
+		Assert.notNull(responsesRequest, REQUEST_BODY_NULL_ERROR);
+		var requestSpec = this.webClient.post().uri("/v1/responses");
+		extraHeaders.forEach(requestSpec::header);
+		return requestSpec.bodyValue(responsesRequest).retrieve().bodyToMono(Map.class);
+	}
+
 	// --------------------------------------------------------------------------
 	// Models
 	// --------------------------------------------------------------------------
@@ -164,6 +198,10 @@ public final class OpenClawApi {
 	 */
 	public ListModelResponse listModels() {
 		return this.restClient.get().uri("/v1/models").retrieve().body(ListModelResponse.class);
+	}
+
+	public Mono<ListModelResponse> listModelsAsync() {
+		return this.webClient.get().uri("/v1/models").retrieve().bodyToMono(ListModelResponse.class);
 	}
 
 	/**
@@ -187,6 +225,14 @@ public final class OpenClawApi {
 		var requestSpec = this.restClient.post().uri("/v1/embeddings");
 		extraHeaders.forEach(requestSpec::header);
 		return requestSpec.body(embeddingsRequest).retrieve().body(EmbeddingsResponse.class);
+	}
+
+	public Mono<EmbeddingsResponse> embedAsync(EmbeddingsRequest embeddingsRequest,
+			Map<String, String> extraHeaders) {
+		Assert.notNull(embeddingsRequest, REQUEST_BODY_NULL_ERROR);
+		var requestSpec = this.webClient.post().uri("/v1/embeddings");
+		extraHeaders.forEach(requestSpec::header);
+		return requestSpec.bodyValue(embeddingsRequest).retrieve().bodyToMono(EmbeddingsResponse.class);
 	}
 
 	// ========================================================================
